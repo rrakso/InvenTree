@@ -119,6 +119,7 @@ class PrintPartLabel(generics.RetrieveUpdateAPIView):
         dataToPost["name"] = part.name
         dataToPost["description"] = part.description
         payload = json.dumps(dataToPost)
+        print("Payload {}".format(dataToPost))
         # headers = {'content-type': "application/x-www-form-urlencoded"}
         headers = {'content-type': "application/json"}
         errorStatus = status.HTTP_503_SERVICE_UNAVAILABLE
