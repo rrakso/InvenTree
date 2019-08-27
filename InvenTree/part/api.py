@@ -25,16 +25,21 @@ from .models import Part, PartCategory, BomItem, PartStar
 from .serializers import PartSerializer, BomItemSerializer
 from .serializers import CategorySerializer
 from .serializers import PartStarSerializer
+from .serializers import PrintPartLabelSerializer
 
 from InvenTree.views import TreeSerializer
 from InvenTree.helpers import str2bool
+
+# Added Oskar to work with printing view
+from django.views import View
+from django.http import HttpResponse
 
 
 class PartCategoryTree(TreeSerializer):
 
     title = "Parts"
     model = PartCategory
-    
+
     @property
     def root_url(self):
         return reverse('part-index')
@@ -93,6 +98,44 @@ class PartDetail(generics.RetrieveUpdateAPIView):
     permission_classes = [
         permissions.IsAuthenticated,
     ]
+
+
+class PrintPartLabel(generics.RetrieveUpdateAPIView):
+    """ API endpoint for detail view of a single Part object """
+
+    queryset = Part.objects.all()
+
+    serializer_class = PrintPartLabelSerializer
+
+    def get(self, request, *args, **kwargs):
+        pk = self.kwargs['pk']
+        part = Part.objects.get(id=pk)
+        import http.client
+        import json
+        conn = http.client.HTTPConnection("localhost:5050")
+        dataToPost = {}
+        dataToPost["id"] = pk
+        dataToPost["name"] = part.name
+        dataToPost["description"] = part.description
+        payload = json.dumps(dataToPost)
+        # headers = {'content-type': "application/x-www-form-urlencoded"}
+        headers = {'content-type': "application/json"}
+        errorStatus = status.HTTP_503_SERVICE_UNAVAILABLE
+        try:
+            conn.request("POST", "/printPartLabel", payload, headers)
+            res = conn.getresponse()
+            data = res.read()
+            print(res)
+            print(data.decode("utf-8"))
+            # return Response(data.decode("utf-8"))
+            return HttpResponse(data.decode("utf-8"))
+        except ConnectionRefusedError as e:
+            return Response({"error": "port tunneling is not active or bad port number"}, status=errorStatus)
+        except ConnectionResetError:
+            return Response({"error": "server on the remote host is turned off"}, status=errorStatus)
+    # permission_classes = [
+        # permissions.IsAuthenticatedOrReadOnly,
+    # ]
 
 
 class PartList(generics.ListCreateAPIView):
@@ -269,7 +312,7 @@ class BomList(generics.ListCreateAPIView):
     """
 
     serializer_class = BomItemSerializer
-    
+
     def get_serializer(self, *args, **kwargs):
 
         # Do we wish to include extra detail?
@@ -341,6 +384,7 @@ part_api_urls = [
     url(r'^star/', include(part_star_api_urls)),
 
     url(r'^(?P<pk>\d+)/?', PartDetail.as_view(), name='api-part-detail'),
+    url(r'^print/(?P<pk>\d+)/', PrintPartLabel.as_view(), name='api-part-detail'),
 
     url(r'^.*$', PartList.as_view(), name='api-part-list'),
 ]
