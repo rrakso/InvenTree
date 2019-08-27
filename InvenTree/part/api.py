@@ -124,7 +124,9 @@ class PrintPartLabel(generics.RetrieveUpdateAPIView):
         headers = {'content-type': "application/json"}
         errorStatus = status.HTTP_503_SERVICE_UNAVAILABLE
         try:
+            print("robię request")
             conn.request("POST", "/printPartLabel", payload, headers)
+            print("mam request")
             res = conn.getresponse()
             data = res.read()
             print(res)
