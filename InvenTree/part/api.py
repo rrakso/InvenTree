@@ -113,7 +113,7 @@ class PrintPartLabel(generics.RetrieveUpdateAPIView):
         part = Part.objects.get(id=pk)
         import http.client
         import json
-        conn = http.client.HTTPConnection("localhost:5050")
+        conn = http.client.HTTPConnection("localhost:5051")
         dataToPost = {}
         dataToPost["id"] = pk
         dataToPost["name"] = part.name
