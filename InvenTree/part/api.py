@@ -108,6 +108,7 @@ class PrintPartLabel(generics.RetrieveUpdateAPIView):
     serializer_class = PrintPartLabelSerializer
 
     def get(self, request, *args, **kwargs):
+        print("PRINT")
         pk = self.kwargs['pk']
         part = Part.objects.get(id=pk)
         import http.client
