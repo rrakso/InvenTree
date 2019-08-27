@@ -135,6 +135,8 @@ class PrintPartLabel(generics.RetrieveUpdateAPIView):
             return Response({"error": "port tunneling is not active or bad port number"}, status=errorStatus)
         except ConnectionResetError:
             return Response({"error": "server on the remote host is turned off"}, status=errorStatus)
+        except:
+            print("SHIET")
     # permission_classes = [
         # permissions.IsAuthenticatedOrReadOnly,
     # ]
