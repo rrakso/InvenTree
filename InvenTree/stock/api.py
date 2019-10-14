@@ -175,7 +175,7 @@ class StockMove(APIView):
 
         if 'stock' not in data:
             raise ValidationError({'stock': 'Stock list must be specified'})
-        
+
         stock_list = data.get('stock')
 
         if type(stock_list) is not list:
@@ -270,7 +270,7 @@ class StockList(generics.ListCreateAPIView):
 
         kwargs['part_detail'] = part_detail
         kwargs['location_detail'] = location_detail
-        
+
         kwargs['context'] = self.get_serializer_context()
         return self.serializer_class(*args, **kwargs)
 
@@ -315,7 +315,7 @@ class StockList(generics.ListCreateAPIView):
             if loc_id:
                 if loc_id not in locations:
                     locations[loc_id] = StockLocation.objects.get(pk=loc_id).pathstring
-                
+
                 item['location__path'] = locations[loc_id]
             else:
                 item['location__path'] = None
@@ -356,7 +356,7 @@ class StockList(generics.ListCreateAPIView):
             try:
                 location = StockLocation.objects.get(pk=loc_id)
                 stock_list = stock_list.filter(location__in=location.getUniqueChildren())
-                 
+
             except StockLocation.DoesNotExist:
                 pass
 
@@ -496,6 +496,7 @@ stock_api_urls = [
 
     # Detail for a single stock item
     url(r'^(?P<pk>\d+)/', include(stock_endpoints)),
+    url(r'^print/(?P<pk>\d+)/', PrintPartLabel.as_view(), name='api-part-detail'),
 
     url(r'^.*$', StockList.as_view(), name='api-stock-list'),
 ]
