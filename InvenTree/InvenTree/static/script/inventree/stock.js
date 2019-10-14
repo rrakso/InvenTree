@@ -42,13 +42,10 @@ function loadStockTable(table, options) {
     
     var params = options.params || {};
 
-    table.bootstrapTable({
-        sortable: true,
-        search: true,
+    console.log('load stock table');
+
+    table.inventreeTable({
         method: 'get',
-        pagination: true,
-        pageSize: 25,
-        rememberOrder: true,
         formatNoMatches: function() {
             return 'No stock items matching query';
         },
@@ -76,12 +73,40 @@ function loadStockTable(table, options) {
             }
             else if (field == 'quantity') {
                 var stock = 0;
+                var items = 0;
 
                 data.forEach(function(item) {
                     stock += item.quantity; 
+                    items += 1;
                 });
 
-                return stock;
+                return stock + " (" + items + " items)";
+            } else if (field == 'batch') {
+                var batches = [];
+
+                data.forEach(function(item) {
+                    var batch = item.batch;
+
+                    if (!batch || batch == '') {
+                        batch = '-';
+                    }
+
+                    if (!batches.includes(batch)) {
+                        batches.push(batch); 
+                    }
+                });
+
+                if (batches.length > 1) {
+                    return "" + batches.length + " batches";
+                } else if (batches.length == 1) {
+                    if (batches[0]) {
+                        return batches[0];
+                    } else {
+                        return '-';
+                    }
+                } else {
+                    return '-';
+                }
             } else if (field == 'location__path') {
                 /* Determine how many locations */
                 var locations = [];
@@ -164,6 +189,11 @@ function loadStockTable(table, options) {
                     
                     return text;
                 }
+            },
+            {
+                field: 'batch',
+                title: 'Batch',
+                sortable: true,
             },
             {
                 field: 'location__path',
@@ -353,15 +383,10 @@ function loadStockTrackingTable(table, options) {
         }
     });
 
-    table.bootstrapTable({
-        sortable: true,
-        search: true,
+    table.inventreeTable({
         method: 'get',
-        rememberOrder: true,
         queryParams: options.params,
         columns: cols,
-        pagination: true,
-        pageSize: 50,
         url: options.url,
     });
 

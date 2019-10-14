@@ -16,11 +16,14 @@ from django.contrib.auth.models import User
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
 
+from mptt.models import TreeForeignKey
+
 from datetime import datetime
 from InvenTree import helpers
 
 from InvenTree.status_codes import StockStatus
 from InvenTree.models import InvenTreeTree
+from InvenTree.fields import InvenTreeURLField
 
 from part.models import Part
 
@@ -34,9 +37,6 @@ class StockLocation(InvenTreeTree):
     def get_absolute_url(self):
         return reverse('stock-location-detail', kwargs={'pk': self.id})
 
-    def has_items(self):
-        return self.stock_items.count() > 0
-
     def format_barcode(self):
         """ Return a JSON string for formatting a barcode for this StockLocation object """
 
@@ -49,16 +49,33 @@ class StockLocation(InvenTreeTree):
             }
         )
 
+    def get_stock_items(self, cascade=True):
+        """ Return a queryset for all stock items under this category.
+
+        Args:
+            cascade: If True, also look under sublocations (default = True)
+        """
+
+        if cascade:
+            query = StockItem.objects.filter(location__in=self.getUniqueChildren(include_self=True))
+        else:
+            query = StockItem.objects.filter(location=self.pk)
+
+        return query
+
     def stock_item_count(self, cascade=True):
         """ Return the number of StockItem objects which live in or under this category
         """
 
-        if cascade:
-            query = StockItem.objects.filter(location__in=self.getUniqueChildren())
-        else:
-            query = StockItem.objects.filter(location=self)
+        return self.get_stock_items(cascade).count()
 
-        return query.count()
+    def has_items(self, cascade=True):
+        """ Return True if there are StockItems existing in this category.
+
+        Args:
+            cascade: If True, also search an sublocations (default = True)
+        """
+        return self.stock_item_count(cascade) > 0
 
     @property
     def item_count(self):
@@ -101,6 +118,7 @@ class StockItem(models.Model):
         delete_on_deplete: If True, StockItem will be deleted when the stock level gets to zero
         status: Status of this StockItem (ref: InvenTree.status_codes.StockStatus)
         notes: Extra notes field
+        build: Link to a Build (if this stock item was created from a build)
         purchase_order: Link to a PurchaseOrder (if this stock item was created from a PurchaseOrder)
         infinite: If True this StockItem can never be exhausted
     """
@@ -111,16 +129,25 @@ class StockItem(models.Model):
         else:
             add_note = False
 
+        user = kwargs.pop('user', None)
+        
+        add_note = add_note and kwargs.pop('note', True)
+
         super(StockItem, self).save(*args, **kwargs)
 
         if add_note:
             # This StockItem is being saved for the first time
             self.addTransactionNote(
                 'Created stock item',
-                None,
+                user,
                 notes="Created new stock item for part '{p}'".format(p=str(self.part)),
                 system=True
             )
+
+    @property
+    def status_label(self):
+
+        return StockStatus.label(self.status)
 
     @property
     def serialized(self):
@@ -136,6 +163,12 @@ class StockItem(models.Model):
         """
 
         if not part.trackable:
+            return False
+
+        # Return False if an invalid serial number is supplied
+        try:
+            serial_number = int(serial_number)
+        except ValueError:
             return False
 
         items = StockItem.objects.filter(serial=serial_number)
@@ -165,12 +198,12 @@ class StockItem(models.Model):
                 if self.part.variant_of is not None:
                     if StockItem.objects.filter(part__variant_of=self.part.variant_of, serial=self.serial).exclude(id=self.id).exists():
                         raise ValidationError({
-                            'serial': _('A part with this serial number already exists for template part {part}'.format(part=self.part.variant_of))
+                            'serial': _('A stock item with this serial number already exists for template part {part}'.format(part=self.part.variant_of))
                         })
                 else:
-                    if StockItem.objects.filter(serial=self.serial).exclude(id=self.id).exists():
+                    if StockItem.objects.filter(part=self.part, serial=self.serial).exclude(id=self.id).exists():
                         raise ValidationError({
-                            'serial': _('A part with this serial number already exists')
+                            'serial': _('A stock item with this serial number already exists')
                         })
         except Part.DoesNotExist:
             pass
@@ -204,12 +237,15 @@ class StockItem(models.Model):
                         })
 
                     if self.quantity == 0:
+                        self.quantity = 1
+
+                    elif self.quantity > 1:
                         raise ValidationError({
                             'quantity': _('Quantity must be 1 for item with a serial number')
                         })
 
-                    if self.delete_on_deplete:
-                        raise ValidationError({'delete_on_deplete': _("Must be set to False for item with a serial number")})
+                    # Serial numbered items cannot be deleted on depletion
+                    self.delete_on_deplete = False
 
                 # A template part cannot be instantiated as a StockItem
                 if self.part.is_template:
@@ -267,9 +303,9 @@ class StockItem(models.Model):
     supplier_part = models.ForeignKey('company.SupplierPart', blank=True, null=True, on_delete=models.SET_NULL,
                                       help_text='Select a matching supplier part for this stock item')
 
-    location = models.ForeignKey(StockLocation, on_delete=models.DO_NOTHING,
-                                 related_name='stock_items', blank=True, null=True,
-                                 help_text='Where is this stock item located?')
+    location = TreeForeignKey(StockLocation, on_delete=models.DO_NOTHING,
+                              related_name='stock_items', blank=True, null=True,
+                              help_text='Where is this stock item located?')
 
     belongs_to = models.ForeignKey('self', on_delete=models.DO_NOTHING,
                                    related_name='owned_parts', blank=True, null=True,
@@ -282,7 +318,7 @@ class StockItem(models.Model):
     serial = models.PositiveIntegerField(blank=True, null=True,
                                          help_text='Serial number for this item')
  
-    URL = models.URLField(max_length=125, blank=True)
+    URL = InvenTreeURLField(max_length=125, blank=True)
 
     batch = models.CharField(max_length=100, blank=True, null=True,
                              help_text='Batch code for this stock item')
@@ -290,6 +326,13 @@ class StockItem(models.Model):
     quantity = models.PositiveIntegerField(validators=[MinValueValidator(0)], default=1)
 
     updated = models.DateField(auto_now=True, null=True)
+
+    build = models.ForeignKey(
+        'build.Build', on_delete=models.SET_NULL,
+        blank=True, null=True,
+        help_text='Build for this stock item',
+        related_name='build_outputs',
+    )
 
     purchase_order = models.ForeignKey(
         'order.PurchaseOrder',
@@ -350,6 +393,7 @@ class StockItem(models.Model):
 
         Brief automated note detailing a movement or quantity change.
         """
+        
         track = StockItemTracking.objects.create(
             item=self,
             title=title,
@@ -364,12 +408,89 @@ class StockItem(models.Model):
         track.save()
 
     @transaction.atomic
-    def serializeStock(self, serials, user):
+    def serializeStock(self, quantity, serials, user, notes='', location=None):
         """ Split this stock item into unique serial numbers.
+
+        - Quantity can be less than or equal to the quantity of the stock item
+        - Number of serial numbers must match the quantity
+        - Provided serial numbers must not already be in use
+
+        Args:
+            quantity: Number of items to serialize (integer)
+            serials: List of serial numbers (list<int>)
+            user: User object associated with action
+            notes: Optional notes for tracking
+            location: If specified, serialized items will be placed in the given location
         """
 
-        # TODO
-        pass
+        # Cannot serialize stock that is already serialized!
+        if self.serialized:
+            return
+
+        # Quantity must be a valid integer value
+        try:
+            quantity = int(quantity)
+        except ValueError:
+            raise ValidationError({"quantity": _("Quantity must be integer")})
+
+        if quantity <= 0:
+            raise ValidationError({"quantity": _("Quantity must be greater than zero")})
+
+        if quantity > self.quantity:
+            raise ValidationError({"quantity": _("Quantity must not exceed available stock quantity ({n})".format(n=self.quantity))})
+
+        if not type(serials) in [list, tuple]:
+            raise ValidationError({"serial_numbers": _("Serial numbers must be a list of integers")})
+
+        if any([type(i) is not int for i in serials]):
+            raise ValidationError({"serial_numbers": _("Serial numbers must be a list of integers")})
+
+        if not quantity == len(serials):
+            raise ValidationError({"quantity": _("Quantity does not match serial numbers")})
+
+        # Test if each of the serial numbers are valid
+        existing = []
+
+        for serial in serials:
+            if not StockItem.check_serial_number(self.part, serial):
+                existing.append(serial)
+
+        if len(existing) > 0:
+            raise ValidationError({"serial_numbers": _("Serial numbers already exist: ") + str(existing)})
+
+        # Create a new stock item for each unique serial number
+        for serial in serials:
+            
+            # Create a copy of this StockItem
+            new_item = StockItem.objects.get(pk=self.pk)
+            new_item.quantity = 1
+            new_item.serial = serial
+            new_item.pk = None
+
+            if location:
+                new_item.location = location
+
+            # The item already has a transaction history, don't create a new note
+            new_item.save(user=user, note=False)
+
+            # Copy entire transaction history
+            new_item.copyHistoryFrom(self)
+
+            # Create a new stock tracking item
+            new_item.addTransactionNote(_('Add serial number'), user, notes=notes)
+
+        # Remove the equivalent number of items
+        self.take_stock(quantity, user, notes=_('Serialized {n} items'.format(n=quantity)))
+
+    @transaction.atomic
+    def copyHistoryFrom(self, other):
+        """ Copy stock history from another part """
+
+        for item in other.tracking_info.all():
+            
+            item.item = self
+            item.pk = None
+            item.save()
 
     @transaction.atomic
     def splitStock(self, quantity, user):
@@ -398,18 +519,14 @@ class StockItem(models.Model):
             return
 
         # Create a new StockItem object, duplicating relevant fields
-        new_stock = StockItem.objects.create(
-            part=self.part,
-            quantity=quantity,
-            supplier_part=self.supplier_part,
-            location=self.location,
-            notes=self.notes,
-            URL=self.URL,
-            batch=self.batch,
-            delete_on_deplete=self.delete_on_deplete
-        )
-
+        # Nullify the PK so a new record is created
+        new_stock = StockItem.objects.get(pk=self.pk)
+        new_stock.pk = None
+        new_stock.quantity = quantity
         new_stock.save()
+
+        # Copy the transaction history of this part into the new one
+        new_stock.copyHistoryFrom(self)
 
         # Add a new tracking item for the new stock item
         new_stock.addTransactionNote(
@@ -609,7 +726,7 @@ class StockItemTracking(models.Model):
 
     notes = models.CharField(blank=True, max_length=512, help_text='Entry notes')
 
-    URL = models.URLField(blank=True, help_text='Link to external page for further information')
+    URL = InvenTreeURLField(blank=True, help_text='Link to external page for further information')
 
     user = models.ForeignKey(User, on_delete=models.SET_NULL, blank=True, null=True)
 

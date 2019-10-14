@@ -48,9 +48,25 @@
             });
     });
 
-    $("#supplier-table").bootstrapTable({
-        sortable: true,
-        search: true,
+    $("#supplier-part-delete").click(function() {
+        
+        var selections = $("#supplier-table").bootstrapTable("getSelections");
+
+        var parts = [];
+
+        selections.forEach(function(item) {
+            parts.push(item.pk);
+        });
+
+        launchModalForm("{% url 'supplier-part-delete' %}", {
+            data: {
+                parts: parts,
+            },
+            reload: true,
+        });
+    });
+
+    $("#supplier-table").inventreeTable({
         formatNoMatches: function() { return "No supplier parts available for {{ part.full_name }}"; },
         queryParams: function(p) {
             return {

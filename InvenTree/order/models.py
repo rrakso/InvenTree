@@ -5,13 +5,13 @@ Order model definitions
 # -*- coding: utf-8 -*-
 
 from django.db import models, transaction
+from django.db.models import F
 from django.core.validators import MinValueValidator
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import User
 from django.urls import reverse
 from django.utils.translation import ugettext as _
 
-import tablib
 from datetime import datetime
 
 from stock.models import StockItem
@@ -98,6 +98,13 @@ class Order(models.Model):
             self.complete_date = datetime.now().date()
             self.save()
 
+    def cancel_order(self):
+        """ Marks the order as CANCELLED. """
+
+        if self.status in [OrderStatus.PLACED, OrderStatus.PENDING]:
+            self.status = OrderStatus.CANCELLED
+            self.save()
+
 
 class PurchaseOrder(Order):
     """ A PurchaseOrder represents goods shipped inwards from an external supplier.
@@ -124,54 +131,6 @@ class PurchaseOrder(Order):
         blank=True, null=True,
         related_name='+'
     )
-
-    def export_to_file(self, **kwargs):
-        """ Export order information to external file """
-
-        file_format = kwargs.get('format', 'csv').lower()
-
-        data = tablib.Dataset(headers=[
-            'Line',
-            'Part',
-            'Description',
-            'Manufacturer',
-            'MPN',
-            'Order Code',
-            'Quantity',
-            'Received',
-            'Reference',
-            'Notes',
-        ])
-
-        idx = 0
-
-        for item in self.lines.all():
-
-            line = []
-
-            line.append(idx)
-
-            if item.part:
-                line.append(item.part.part.name)
-                line.append(item.part.part.description)
-
-                line.append(item.part.manufacturer)
-                line.append(item.part.MPN)
-                line.append(item.part.SKU)
-
-            else:
-                line += [[] * 5]
-            
-            line.append(item.quantity)
-            line.append(item.received)
-            line.append(item.reference)
-            line.append(item.notes)
-
-            idx += 1
-
-            data.append(line)
-
-        return data.export(file_format)
 
     def get_absolute_url(self):
         return reverse('purchase-order-detail', kwargs={'pk': self.id})
@@ -202,8 +161,8 @@ class PurchaseOrder(Order):
             raise ValidationError({'supplier': _("Part supplier must match PO supplier")})
 
         if group:
-            # Check if there is already a matching line item
-            matches = PurchaseOrderLineItem.objects.filter(part=supplier_part)
+            # Check if there is already a matching line item (for this PO)
+            matches = self.lines.filter(part=supplier_part)
 
             if matches.count() > 0:
                 line = matches.first()
@@ -226,7 +185,7 @@ class PurchaseOrder(Order):
         Any line item where 'received' < 'quantity' will be returned.
         """
 
-        return [line for line in self.lines.all() if line.quantity > line.received]
+        return self.lines.filter(quantity__gt=F('received'))
 
     @transaction.atomic
     def receive_line_item(self, line, location, quantity, user):
@@ -247,6 +206,7 @@ class PurchaseOrder(Order):
         if line.part:
             stock = StockItem(
                 part=line.part.part,
+                supplier_part=line.part,
                 location=location,
                 quantity=quantity,
                 purchase_order=self)

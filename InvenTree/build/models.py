@@ -17,6 +17,7 @@ from django.db.models import Sum
 from django.core.validators import MinValueValidator
 
 from InvenTree.status_codes import BuildStatus
+from InvenTree.fields import InvenTreeURLField
 
 from stock.models import StockItem
 from part.models import Part, BomItem
@@ -89,7 +90,7 @@ class Build(models.Model):
                                      related_name='builds_completed'
                                      )
     
-    URL = models.URLField(blank=True, help_text='Link to external URL')
+    URL = InvenTreeURLField(blank=True, help_text='Link to external URL')
 
     notes = models.TextField(blank=True, help_text='Extra build notes')
     """ Notes attached to each build output """
@@ -237,6 +238,7 @@ class Build(models.Model):
             for serial in serial_numbers:
                 item = StockItem.objects.create(
                     part=self.part,
+                    build=self,
                     location=location,
                     quantity=1,
                     serial=serial,
@@ -250,6 +252,7 @@ class Build(models.Model):
             # Add stock of the newly created item
             item = StockItem.objects.create(
                 part=self.part,
+                build=self,
                 location=location,
                 quantity=self.quantity,
                 batch=str(self.batch) if self.batch else '',

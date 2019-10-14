@@ -88,10 +88,13 @@ InvenTree | {{ company.name }} - Parts
     {% for pb in part.price_breaks.all %}
         <tr>
             <td>{{ pb.quantity }}</td>
-            <td>{{ pb.cost }}
+            <td>
+                {% if pb.currency %}{{ pb.currency.symbol }}{% endif %}
+                {{ pb.cost }}
+                {% if pb.currency %}{{ pb.currency.suffix }}{% endif %}
                 <div class='btn-group' style='float: right;'>
-                    <button title='Edit Price Break' class='btn btn-primary pb-edit-button btn-sm' type='button' url="{% url 'price-break-edit' pb.id %}"><span class='glyphicon glyphicon-small glyphicon-edit'></span></button>
-                    <button title='Delete Price Break' class='btn btn-danger pb-delete-button btn-sm' type='button' url="{% url 'price-break-delete' pb.id %}"><span class='glyphicon glyphicon-small glyphicon-trash'></span></button>
+                    <button title='Edit Price Break' class='btn btn-default btn-sm pb-edit-button' type='button' url="{% url 'price-break-edit' pb.id %}"><span class='glyphicon glyphicon-edit'></span></button>
+                    <button title='Delete Price Break' class='btn btn-default btn-sm pb-delete-button' type='button' url="{% url 'price-break-delete' pb.id %}"><span class='glyphicon glyphicon-trash'></span></button>
                 </div>
             </td>
         </tr>
@@ -127,10 +130,10 @@ InvenTree | {{ company.name }} - Parts
 
     $('#delete-part').click(function() {
         launchModalForm(
-                         "{% url 'supplier-part-delete' part.id %}",
-                         {
-                             redirect: "{% url 'company-index' %}"
-                         }
+            "{% url 'supplier-part-delete' %}?part={{ part.id }}",
+            {
+                redirect: "{% url 'company-detail-parts' part.supplier.id %}"
+            }
         );
     });
 

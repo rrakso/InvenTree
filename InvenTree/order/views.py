@@ -5,6 +5,7 @@ Django views for interacting with Order app
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils.translation import ugettext as _
 from django.views.generic import DetailView, ListView
@@ -13,6 +14,7 @@ from django.forms import HiddenInput
 import logging
 
 from .models import PurchaseOrder, PurchaseOrderLineItem
+from .admin import POLineItemResource
 from build.models import Build
 from company.models import Company, SupplierPart
 from stock.models import StockItem, StockLocation
@@ -89,6 +91,12 @@ class PurchaseOrderCreate(AjaxCreateView):
 
         return initials
 
+    def post_save(self, **kwargs):
+        # Record the user who created this purchase order
+
+        self.object.created_by = self.request.user
+        self.object.save()
+
 
 class PurchaseOrderEdit(AjaxUpdateView):
     """ View for editing a PurchaseOrder using a modal form """
@@ -108,6 +116,39 @@ class PurchaseOrderEdit(AjaxUpdateView):
             form.fields['supplier'].widget = HiddenInput()
 
         return form
+
+
+class PurchaseOrderCancel(AjaxUpdateView):
+    """ View for cancelling a purchase order """
+
+    model = PurchaseOrder
+    ajax_form_title = 'Cancel Order'
+    ajax_template_name = 'order/order_cancel.html'
+    form_class = order_forms.CancelPurchaseOrderForm
+
+    def post(self, request, *args, **kwargs):
+        """ Mark the PO as 'CANCELLED' """
+
+        order = self.get_object()
+        form = self.get_form()
+
+        confirm = str2bool(request.POST.get('confirm', False))
+
+        valid = False
+
+        if not confirm:
+            form.errors['confirm'] = [_('Confirm order cancellation')]
+        else:
+            valid = True
+
+        data = {
+            'form_valid': valid
+        }
+
+        if valid:
+            order.cancel_order()
+
+        return self.renderJsonResponse(request, form, data)
 
 
 class PurchaseOrderIssue(AjaxUpdateView):
@@ -164,12 +205,14 @@ class PurchaseOrderExport(AjaxView):
             fmt=export_format
         )
 
-        filedata = order.export_to_file(format=export_format)
+        dataset = POLineItemResource().export(queryset=order.lines.all())
+
+        filedata = dataset.export(format=export_format)
 
         return DownloadFile(filedata, filename)
 
 
-class PurchaseOrderReceive(AjaxView):
+class PurchaseOrderReceive(AjaxUpdateView):
     """ View for receiving parts which are outstanding against a PurchaseOrder.
 
     Any parts which are outstanding are listed.
@@ -177,6 +220,7 @@ class PurchaseOrderReceive(AjaxView):
 
     """
 
+    form_class = order_forms.ReceivePurchaseOrderForm
     ajax_form_title = "Receive Parts"
     ajax_template_name = "order/receive_parts.html"
 
@@ -188,11 +232,33 @@ class PurchaseOrderReceive(AjaxView):
         ctx = {
             'order': self.order,
             'lines': self.lines,
-            'locations': StockLocation.objects.all(),
-            'destination': self.destination,
         }
 
         return ctx
+
+    def get_lines(self):
+        """
+        Extract particular line items from the request,
+        or default to *all* pending line items if none are provided
+        """
+
+        lines = None
+
+        if 'line' in self.request.GET:
+            line_id = self.request.GET.get('line')
+
+            try:
+                lines = PurchaseOrderLineItem.objects.filter(pk=line_id)
+            except (PurchaseOrderLineItem.DoesNotExist, ValueError):
+                pass
+
+        # TODO - Option to pass multiple lines?
+
+        # No lines specified - default selection
+        if lines is None:
+            lines = self.order.pending_line_items()
+
+        return lines
 
     def get(self, request, *args, **kwargs):
         """ Respond to a GET request. Determines which parts are outstanding,
@@ -202,13 +268,13 @@ class PurchaseOrderReceive(AjaxView):
         self.request = request
         self.order = get_object_or_404(PurchaseOrder, pk=self.kwargs['pk'])
 
-        self.lines = self.order.pending_line_items()
+        self.lines = self.get_lines()
 
         for line in self.lines:
             # Pre-fill the remaining quantity
             line.receive_quantity = line.remaining()
 
-        return self.renderJsonResponse(request)
+        return self.renderJsonResponse(request, form=self.get_form())
 
     def post(self, request, *args, **kwargs):
         """ Respond to a POST request. Data checking and error handling.
@@ -223,8 +289,8 @@ class PurchaseOrderReceive(AjaxView):
         self.destination = None
 
         # Extract the destination for received parts
-        if 'receive_location' in request.POST:
-            pk = request.POST['receive_location']
+        if 'location' in request.POST:
+            pk = request.POST['location']
             try:
                 self.destination = StockLocation.objects.get(id=pk)
             except (StockLocation.DoesNotExist, ValueError):
@@ -240,6 +306,11 @@ class PurchaseOrderReceive(AjaxView):
                 try:
                     line = PurchaseOrderLineItem.objects.get(id=pk)
                 except (PurchaseOrderLineItem.DoesNotExist, ValueError):
+                    continue
+
+                # Check that line matches the order
+                if not line.order == self.order:
+                    # TODO - Display a non-field error?
                     continue
 
                 # Ignore a part that doesn't map to a SupplierPart
@@ -274,8 +345,9 @@ class PurchaseOrderReceive(AjaxView):
             'success': 'Items marked as received',
         }
 
-        return self.renderJsonResponse(request, data=data)
+        return self.renderJsonResponse(request, data=data, form=self.get_form())
 
+    @transaction.atomic
     def receive_parts(self):
         """ Called once the form has been validated.
         Create new stockitems against received parts.
@@ -557,6 +629,7 @@ class OrderParts(AjaxView):
 
         return self.renderJsonResponse(self.request, data=data)
 
+    @transaction.atomic
     def order_items(self):
         """ Add the selected items to the purchase orders. """
 
@@ -609,13 +682,30 @@ class POLineItemCreate(AjaxCreateView):
 
         valid = form.is_valid()
 
+        # Extract the SupplierPart ID from the form
         part_id = form['part'].value()
 
+        # Extract the Order ID from the form
+        order_id = form['order'].value()
+
         try:
-            SupplierPart.objects.get(id=part_id)
+            order = PurchaseOrder.objects.get(id=order_id)
+        except (ValueError, PurchaseOrder.DoesNotExist):
+            order = None
+            form.errors['order'] = [_('Invalid Purchase Order')]
+            valid = False
+
+        try:
+            sp = SupplierPart.objects.get(id=part_id)
+
+            if order is not None:
+                if not sp.supplier == order.supplier:
+                    form.errors['part'] = [_('Supplier must match for Part and Order')]
+                    valid = False
+
         except (SupplierPart.DoesNotExist, ValueError):
             valid = False
-            form.errors['part'] = [_('This field is required')]
+            form.errors['part'] = [_('Invalid SupplierPart selection')]
 
         data = {
             'form_valid': valid,
@@ -636,6 +726,11 @@ class POLineItemCreate(AjaxCreateView):
         """
 
         form = super().get_form()
+
+        # Limit the available to orders to ones that are PENDING
+        query = form.fields['order'].queryset
+        query = query.filter(status=OrderStatus.PENDING)
+        form.fields['order'].queryset = query
 
         order_id = form['order'].value()
 
@@ -658,7 +753,7 @@ class POLineItemCreate(AjaxCreateView):
 
             form.fields['part'].queryset = query
             form.fields['order'].widget = HiddenInput()
-        except PurchaseOrder.DoesNotExist:
+        except (ValueError, PurchaseOrder.DoesNotExist):
             pass
 
         return form

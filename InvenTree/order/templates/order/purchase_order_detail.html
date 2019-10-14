@@ -25,6 +25,32 @@ InvenTree | {{ order }}
                 {% if order.URL %}
                 <a href="{{ order.URL }}">{{ order.URL }}</a>
                 {% endif %}
+                <p>
+                    <div class='btn-row'>
+                        <div class='btn-group'>
+                            <button type='button' class='btn btn-default btn-glyph' id='edit-order' title='Edit order information'>
+                                <span class='glyphicon glyphicon-edit'></span>
+                            </button>
+                            <button type='button' class='btn btn-default btn-glyph' id='export-order' title='Export order to file'>
+                                <span class='glyphicon glyphicon-download-alt'></span>
+                            </button>
+                            {% if order.status == OrderStatus.PENDING and order.lines.count > 0 %}
+                            <button type='button' class='btn btn-default btn-glyph' id='place-order' title='Place order'>
+                                <span class='glyphicon glyphicon-send'></span>
+                            </button>
+                            {% elif order.status == OrderStatus.PLACED %}
+                            <button type='button' class='btn btn-default btn-glyph' id='receive-order' title='Receive items'>
+                                <span class='glyphicon glyphicon-check'></span>
+                            </button>
+                            {% endif %}
+                            {% if order.status == OrderStatus.PENDING or order.status == OrderStatus.PLACED %}
+                            <button type='button' class='btn btn-default btn-glyph' id='cancel-order' title='Cancel order'>
+                                <span class='glyphicon glyphicon-remove'></span>
+                            </button>
+                            {% endif %}
+                        </div>
+                    </div>
+                </p>
             </div>
         </div>
     </div>
@@ -65,13 +91,6 @@ InvenTree | {{ order }}
     {% if order.status == OrderStatus.PENDING %}
     <button type='button' class='btn btn-default' id='new-po-line'>Add Line Item</button>
     {% endif %}
-    <button type='button' class='btn btn-primary' id='edit-order'>Edit Order</button>
-    {% if order.status == OrderStatus.PENDING and order.lines.count > 0 %}
-    <button type='button' class='btn btn-primary' id='place-order'>Place Order</button>
-    {% elif order.status == OrderStatus.PLACED %}
-    <button type='button' class='btn btn-primary' id='receive-order'>Receive Items</button>
-    {% endif %}
-    <button type='button' class='btn btn-primary' id='export-order' title='Export order to file'>Export</button>
 </div>
 
 <h4>Order Items</h4>
@@ -89,14 +108,12 @@ InvenTree | {{ order }}
         <th data-sortable='true'>Received</th>
         {% endif %}
         <th>Note</th>
-        {% if order.status == OrderStatus.PENDING %}
         <th></th>
-        {% endif %}
     </tr>
     </thead>
     <tbody>
     {% for line in order.lines.all %}
-    <tr>
+    <tr{% if order.status == OrderStatus.PLACED %} class={% if line.received < line.quantity %}'rowinvalid'{% else %}'rowvalid'{% endif %}{% endif %}>
         <td>
             {{ forloop.counter }}
         </td>
@@ -118,18 +135,23 @@ InvenTree | {{ order }}
         <td>
             {{ line.notes }}
         </td>
-        {% if order.status == OrderStatus.PENDING %}
         <td>
             <div class='btn-group'>
+                {% if order.status == OrderStatus.PENDING %}
                 <button class='btn btn-default btn-glyph' line='{{ line.id }}' id='edit-line-item-{{ line.id }} title='Edit line item' onclick='editPurchaseOrderLineItem()'>
                     <span url="{% url 'po-line-item-edit' line.id %}" line='{{ line.id }}' class='glyphicon glyphicon-edit'></span>
                 </button>
                 <button class='btn btn-default btn-glyph' line='{{ line.id }}' id='remove-line-item-{{ line.id }' title='Remove line item' type='button' onclick='removePurchaseOrderLineItem()'>
                     <span url="{% url 'po-line-item-delete' line.id %}" line='{{ line.id }}' class='glyphicon glyphicon-remove'></span>
                 </button>
+                {% endif %}
+                {% if order.status == OrderStatus.PLACED and line.received < line.quantity %}
+                <button class='btn btn-default btn-glyph line-receive' pk='{{ line.pk }}' title='Receive item(s)'>
+                    <span class='glyphicon glyphicon-check'></span>
+                </button>
+                {% endif %}
             </div>
         </td>
-        {% endif %}
     </tr>
     {% endfor %}
     </tbody>
@@ -162,9 +184,37 @@ $("#edit-order").click(function() {
     );
 });
 
+$("#cancel-order").click(function() {
+    launchModalForm("{% url 'purchase-order-cancel' order.id %}", {
+        reload: true,
+    });
+});
+
+$("#po-lines-table").on('click', ".line-receive", function() {
+
+    var button = $(this);
+
+    console.log('clicked! ' + button.attr('pk'));
+
+    launchModalForm("{% url 'purchase-order-receive' order.id %}", {
+        reload: true,
+        data: {
+            line: button.attr('pk')
+        }
+    });
+});
+
 $("#receive-order").click(function() {
     launchModalForm("{% url 'purchase-order-receive' order.id %}", {
         reload: true,
+        secondary: [
+            {
+                field: 'location',
+                label: 'New Location',
+                title: 'Create new stock location',
+                url: "{% url 'stock-location-create' %}",
+            },
+        ]
     });
 });
 
@@ -196,9 +246,7 @@ $('#new-po-line').click(function() {
 });
 {% endif %}
 
-$("#po-lines-table").bootstrapTable({
-    search: true,
-    sortable: true,
+$("#po-lines-table").inventreeTable({
 });
 
 

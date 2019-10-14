@@ -7,7 +7,11 @@ from __future__ import unicode_literals
 
 from django import forms
 from django.forms.utils import ErrorDict
+from django.utils.translation import ugettext as _
 
+from mptt.fields import TreeNodeChoiceField
+
+from InvenTree.helpers import GetExportFormats
 from InvenTree.forms import HelperForm
 from .models import StockLocation, StockItem, StockItemTracking
 
@@ -27,7 +31,7 @@ class EditStockLocationForm(HelperForm):
 class CreateStockItemForm(HelperForm):
     """ Form for creating a new StockItem """
 
-    serial_numbers = forms.CharField(label='Serial numbers', required=False, help_text='Enter unique serial numbers')
+    serial_numbers = forms.CharField(label='Serial numbers', required=False, help_text=_('Enter unique serial numbers (or leave blank)'))
 
     class Meta:
         model = StockItem
@@ -62,6 +66,53 @@ class CreateStockItemForm(HelperForm):
         self._clean_form()
 
 
+class SerializeStockForm(forms.ModelForm):
+    """ Form for serializing a StockItem. """
+
+    destination = TreeNodeChoiceField(queryset=StockLocation.objects.all(), label='Destination', required=True, help_text='Destination for serialized stock (by default, will remain in current location)')
+    
+    serial_numbers = forms.CharField(label='Serial numbers', required=True, help_text='Unique serial numbers (must match quantity)')
+    
+    note = forms.CharField(label='Notes', required=False, help_text='Add transaction note (optional)')
+
+    class Meta:
+        model = StockItem
+
+        fields = [
+            'quantity',
+            'serial_numbers',
+            'destination',
+            'note',
+        ]
+
+
+class ExportOptionsForm(HelperForm):
+    """ Form for selecting stock export options """
+
+    file_format = forms.ChoiceField(label=_('File Format'), help_text=_('Select output file format'))
+
+    include_sublocations = forms.BooleanField(required=False, initial=True, help_text=_("Include stock items in sub locations"))
+
+    class Meta:
+        model = StockLocation
+        fields = [
+            'file_format',
+            'include_sublocations',
+        ]
+
+    def get_format_choices(self):
+        """ File format choices """
+
+        choices = [(x, x.upper()) for x in GetExportFormats()]
+
+        return choices
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.fields['file_format'].choices = self.get_format_choices()
+
+
 class AdjustStockForm(forms.ModelForm):
     """ Form for performing simple stock adjustments.
 
@@ -73,25 +124,15 @@ class AdjustStockForm(forms.ModelForm):
     This form is used for managing stock adjuments for single or multiple stock items.
     """
 
-    def get_location_choices(self):
-        locs = StockLocation.objects.all()
-
-        choices = [(None, '---------')]
-
-        for loc in locs:
-            choices.append((loc.pk, loc.pathstring + ' - ' + loc.description))
-
-        return choices
-
-    destination = forms.ChoiceField(label='Destination', required=True, help_text='Destination stock location')
+    destination = TreeNodeChoiceField(queryset=StockLocation.objects.all(), label='Destination', required=True, help_text=_('Destination stock location'))
+    
     note = forms.CharField(label='Notes', required=True, help_text='Add note (required)')
+    
     # transaction = forms.BooleanField(required=False, initial=False, label='Create Transaction', help_text='Create a stock transaction for these parts')
-    confirm = forms.BooleanField(required=False, initial=False, label='Confirm stock adjustment', help_text='Confirm movement of stock items')
+    
+    confirm = forms.BooleanField(required=False, initial=False, label='Confirm stock adjustment', help_text=_('Confirm movement of stock items'))
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        
-        self.fields['destination'].choices = self.get_location_choices()
+    set_loc = forms.BooleanField(required=False, initial=False, label='Set Default Location', help_text=_('Set the destination as the default location for selected parts'))
 
     class Meta:
         model = StockItem

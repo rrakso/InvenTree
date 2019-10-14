@@ -1,4 +1,5 @@
 from django.test import TestCase
+from django.core.exceptions import ValidationError
 
 from .models import Part, PartCategory
 
@@ -48,7 +49,7 @@ class CategoryTest(TestCase):
     def test_unique_childs(self):
         """ Test the 'unique_children' functionality """
 
-        childs = self.electronics.getUniqueChildren()
+        childs = [item.pk for item in self.electronics.getUniqueChildren()]
 
         self.assertIn(self.transceivers.id, childs)
         self.assertIn(self.ic.id, childs)
@@ -58,7 +59,7 @@ class CategoryTest(TestCase):
     def test_unique_parents(self):
         """ Test the 'unique_parents' functionality """
         
-        parents = self.transceivers.getUniqueParents()
+        parents = [item.pk for item in self.transceivers.getUniqueParents()]
 
         self.assertIn(self.electronics.id, parents)
         self.assertIn(self.ic.id, parents)
@@ -67,8 +68,8 @@ class CategoryTest(TestCase):
     def test_path_string(self):
         """ Test that the category path string works correctly """
 
-        self.assertEqual(str(self.resistors), 'Electronics/Resistors')
-        self.assertEqual(str(self.transceivers), 'Electronics/IC/Transceivers')
+        self.assertEqual(str(self.resistors), 'Electronics/Resistors - Resistors')
+        self.assertEqual(str(self.transceivers.pathstring), 'Electronics/IC/Transceivers')
 
     def test_url(self):
         """ Test that the PartCategory URL works """
@@ -86,6 +87,26 @@ class CategoryTest(TestCase):
         self.assertEqual(self.capacitors.partcount(), 1)
 
         self.assertEqual(self.electronics.partcount(), 3)
+
+        self.assertEqual(self.mechanical.partcount(), 4)
+        self.assertEqual(self.mechanical.partcount(active=True), 3)
+        self.assertEqual(self.mechanical.partcount(False), 2)
+
+        self.assertEqual(self.electronics.item_count, self.electronics.partcount())
+
+    def test_invalid_name(self):
+        # Test that an illegal character is prohibited in a category name
+
+        cat = PartCategory(name='test/with/illegal/chars', description='Test category', parent=None)
+
+        with self.assertRaises(ValidationError) as err:
+            cat.full_clean()
+            cat.save()
+            
+        self.assertIn('Illegal character in name', str(err.exception.error_dict.get('name')))
+        
+        cat.name = 'good name'
+        cat.save()
 
     def test_delete(self):
         """ Test that category deletion moves the children properly """
@@ -111,11 +132,11 @@ class CategoryTest(TestCase):
     def test_default_locations(self):
         """ Test traversal for default locations """
 
-        self.assertEqual(str(self.fasteners.default_location), 'Office/Drawer_1')
+        self.assertEqual(str(self.fasteners.default_location), 'Office/Drawer_1 - In my desk')
 
         # Test that parts in this location return the same default location, too
         for p in self.fasteners.children.all():
-            self.assert_equal(p.get_default_location(), 'Office/Drawer_1')
+            self.assert_equal(p.get_default_location().pathstring, 'Office/Drawer_1')
 
         # Any part under electronics should default to 'Home'
         R1 = Part.objects.get(name='R_2K2_0805')

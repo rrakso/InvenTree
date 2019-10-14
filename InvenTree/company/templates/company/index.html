@@ -32,11 +32,7 @@ InvenTree | Supplier List
                         });
     });
 
-    $("#company-table").bootstrapTable({
-        sortable: true,
-        search: true,
-        pagination: true,
-        pageSize: 50,
+    $("#company-table").inventreeTable({
         formatNoMatches: function() { return "No company information found"; },
         columns: [
             {
@@ -55,6 +51,7 @@ InvenTree | Supplier List
             {
                 field: 'description',
                 title: 'Description',
+                sortable: true,
             },
             {
                 field: 'website',
@@ -69,6 +66,7 @@ InvenTree | Supplier List
             {
                 field: 'part_count',
                 title: 'Parts',
+                sortable: true,
                 formatter: function(value, row, index, field) {
                     return renderLink(value, row.url + 'parts/');
                 }
