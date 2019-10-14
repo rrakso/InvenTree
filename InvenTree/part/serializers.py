@@ -43,7 +43,7 @@ class PartBriefSerializer(InvenTreeModelSerializer):
         queryset = queryset.prefetch_related('bom_items')
         queryset = queryset.prefetch_related('builds')
         return queryset
-    
+
     class Meta:
         model = Part
         fields = [
@@ -106,6 +106,21 @@ class PartSerializer(InvenTreeModelSerializer):
             'salable',
             'active',
             'virtual',
+        ]
+
+
+class PrintPartLabelSerializer(serializers.ModelSerializer):
+    """ Serializer for complete detail information of a part.
+    Used when displaying all details of a single component.
+    """
+
+    class Meta:
+        model = Part
+        partial = True
+        fields = [
+            'pk',
+            'name',
+            'description'
         ]
 
 

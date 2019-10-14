@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404
 from django.shortcuts import HttpResponseRedirect
 from django.utils.translation import gettext_lazy as _
 from django.urls import reverse, reverse_lazy
+from django.http import JsonResponse, HttpResponseRedirect, HttpResponse
 from django.views.generic import DetailView, ListView, FormView
 from django.forms.models import model_to_dict
 from django.forms import HiddenInput, CheckboxInput
@@ -113,7 +114,7 @@ class PartAttachmentEdit(AjaxUpdateView):
     form_class = part_forms.EditPartAttachmentForm
     ajax_template_name = 'modal_form.html'
     ajax_form_title = 'Edit attachment'
-    
+
     def get_data(self):
         return {
             'success': 'Part attachment updated'
@@ -150,7 +151,7 @@ class PartSetCategory(AjaxUpdateView):
 
     category = None
     parts = []
-    
+
     def get(self, request, *args, **kwargs):
         """ Respond to a GET request to this view """
 
@@ -215,7 +216,7 @@ class PartSetCategory(AjaxUpdateView):
         ctx['category'] = self.category
 
         return ctx
-        
+
 
 class MakePartVariant(AjaxCreateView):
     """ View for creating a new variant based on an existing template Part
@@ -338,22 +339,22 @@ class PartDuplicate(AjaxCreateView):
         valid = form.is_valid()
 
         name = request.POST.get('name', None)
-        
+
         if name:
             matches = match_part_names(name)
 
             if len(matches) > 0:
                 context['matches'] = matches
-            
+
                 # Enforce display of the checkbox
                 form.fields['confirm_creation'].widget = CheckboxInput()
-                
+
                 # Check if the user has checked the 'confirm_creation' input
                 confirmed = str2bool(request.POST.get('confirm_creation', False))
 
                 if not confirmed:
                     form.errors['confirm_creation'] = ['Possible matches exist - confirm creation of new part']
-                    
+
                     form.pre_form_warning = 'Possible matches exist - confirm creation of new part'
                     valid = False
 
@@ -403,7 +404,7 @@ class PartCreate(AjaxCreateView):
     """ View for creating a new Part object.
 
     Options for providing initial conditions:
-    
+
     - Provide a category object as initial data
     """
     model = Part
@@ -456,24 +457,24 @@ class PartCreate(AjaxCreateView):
         context = {}
 
         valid = form.is_valid()
-        
+
         name = request.POST.get('name', None)
-        
+
         if name:
             matches = match_part_names(name)
 
             if len(matches) > 0:
                 context['matches'] = matches
-            
+
                 # Enforce display of the checkbox
                 form.fields['confirm_creation'].widget = CheckboxInput()
-                
+
                 # Check if the user has checked the 'confirm_creation' input
                 confirmed = str2bool(request.POST.get('confirm_creation', False))
 
                 if not confirmed:
                     form.errors['confirm_creation'] = ['Possible matches exist - confirm creation of new part']
-                    
+
                     form.pre_form_warning = 'Possible matches exist - confirm creation of new part'
                     valid = False
 
@@ -510,7 +511,7 @@ class PartCreate(AjaxCreateView):
                 initials['keywords'] = category.default_keywords
             except (PartCategory.DoesNotExist, ValueError):
                 pass
-        
+
         # Allow initial data to be passed through as arguments
         for label in ['name', 'IPN', 'description', 'revision', 'keywords']:
             if label in self.request.GET:
@@ -534,7 +535,7 @@ class PartDetail(DetailView):
         - If '?editing=True', set 'editing_enabled' context variable
         """
         context = super(PartDetail, self).get_context_data(**kwargs)
-        
+
         part = self.get_object()
 
         if str2bool(self.request.GET.get('edit', '')):
@@ -757,7 +758,7 @@ class BomUpload(FormView):
 
     def handleBomFileUpload(self):
         """ Process a BOM file upload form.
-        
+
         This function validates that the uploaded file was valid,
         and contains tabulated data that can be extracted.
         If the file does not satisfy these requirements,
@@ -923,7 +924,7 @@ class BomUpload(FormView):
                     col_id = int(s[3])
                 except ValueError:
                     continue
-                
+
                 if row_id not in self.row_data:
                     self.row_data[row_id] = {}
 
@@ -992,7 +993,7 @@ class BomUpload(FormView):
         self.getTableDataFromPost()
 
         valid = len(self.missing_columns) == 0 and not self.duplicates
-        
+
         if valid:
             # Try to extract meaningful data
             self.preFillSelections()
@@ -1003,7 +1004,7 @@ class BomUpload(FormView):
         return self.render_to_response(self.get_context_data(form=None))
 
     def handlePartSelection(self):
-        
+
         # Extract basic table data from POST request
         self.getTableDataFromPost()
 
@@ -1034,7 +1035,7 @@ class BomUpload(FormView):
                         row['errors']['quantity'] = _('Enter a valid quantity')
 
                     row['quantity'] = q
-                     
+
                 except ValueError:
                     continue
 
@@ -1078,7 +1079,7 @@ class BomUpload(FormView):
                 if key.startswith(field + '_'):
                     try:
                         row_id = int(key.replace(field + '_', ''))
-                        
+
                         row = self.getRowByIndex(row_id)
 
                         if row:
@@ -1136,7 +1137,7 @@ class BomUpload(FormView):
         return self.render_to_response(ctx)
 
     def getRowByIndex(self, idx):
-        
+
         for row in self.bom_rows:
             if row['index'] == idx:
                 return row
@@ -1154,7 +1155,7 @@ class BomUpload(FormView):
         self.form = self.get_form(self.get_form_class())
 
         # Did the user POST a file named bom_file?
-        
+
         form_step = request.POST.get('form_step', None)
 
         if form_step == 'select_file':
@@ -1322,7 +1323,7 @@ class PartPricing(AjaxView):
             scaler = Decimal(currency.value)
 
         part = self.get_part()
-        
+
         ctx = {
             'part': part,
             'quantity': quantity,
@@ -1370,7 +1371,7 @@ class PartPricing(AjaxView):
                 if min_bom_price:
                     ctx['min_total_bom_price'] = min_bom_price
                     ctx['min_unit_bom_price'] = min_bom_price / quantity
-                
+
                 if max_bom_price:
                     ctx['max_total_bom_price'] = max_bom_price
                     ctx['max_unit_bom_price'] = max_bom_price / quantity
@@ -1531,9 +1532,9 @@ class CategoryEdit(AjaxUpdateView):
 
         Limit the choices for 'parent' field to those which make sense
         """
-        
+
         form = super(AjaxUpdateView, self).get_form()
-        
+
         category = self.get_object()
 
         # Remove any invalid choices for the parent category part
@@ -1636,14 +1637,14 @@ class BomItemCreate(AjaxCreateView):
 
             # Don't allow selection of sub_part objects which are already added to the Bom!
             query = form.fields['sub_part'].queryset
-            
+
             # Don't allow a part to be added to its own BOM
             query = query.exclude(id=part.id)
             query = query.filter(active=True)
-            
+
             # Eliminate any options that are already in the BOM!
             query = query.exclude(id__in=[item.id for item in part.required_parts()])
-            
+
             form.fields['sub_part'].queryset = query
 
             form.fields['part'].widget = HiddenInput()
