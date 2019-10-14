@@ -10,6 +10,7 @@ from django.views.generic.edit import FormMixin
 from django.views.generic import DetailView, ListView
 from django.forms.models import model_to_dict
 from django.forms import HiddenInput
+from django.urls import reverse
 
 from django.utils.translation import ugettext as _
 
@@ -17,18 +18,23 @@ from InvenTree.views import AjaxView
 from InvenTree.views import AjaxUpdateView, AjaxDeleteView, AjaxCreateView
 from InvenTree.views import QRCodeView
 
-from InvenTree.helpers import str2bool
+from InvenTree.helpers import str2bool, DownloadFile, GetExportFormats
 from InvenTree.helpers import ExtractSerialNumbers
 from datetime import datetime
 
+from company.models import Company
 from part.models import Part
 from .models import StockItem, StockLocation, StockItemTracking
+
+from .admin import StockItemResource
 
 from .forms import EditStockLocationForm
 from .forms import CreateStockItemForm
 from .forms import EditStockItemForm
 from .forms import AdjustStockForm
 from .forms import TrackingEntryForm
+from .forms import SerializeStockForm
+from .forms import ExportOptionsForm
 
 
 class StockIndex(ListView):
@@ -46,6 +52,9 @@ class StockIndex(ListView):
 
         context['locations'] = locations
         context['items'] = StockItem.objects.all()
+
+        context['loc_count'] = StockLocation.objects.count()
+        context['stock_count'] = StockItem.objects.count()
 
         return context
 
@@ -117,6 +126,115 @@ class StockLocationQRCode(QRCodeView):
             return None
 
 
+class StockExportOptions(AjaxView):
+    """ Form for selecting StockExport options """
+
+    model = StockLocation
+    ajax_form_title = 'Stock Export Options'
+    form_class = ExportOptionsForm
+
+    def post(self, request, *args, **kwargs):
+
+        self.request = request
+
+        fmt = request.POST.get('file_format', 'csv').lower()
+        cascade = str2bool(request.POST.get('include_sublocations', False))
+
+        # Format a URL to redirect to
+        url = reverse('stock-export')
+
+        url += '?format=' + fmt
+        url += '&cascade=' + str(cascade)
+
+        data = {
+            'form_valid': True,
+            'format': fmt,
+            'cascade': cascade
+        }
+
+        return self.renderJsonResponse(self.request, self.form_class(), data=data)
+
+    def get(self, request, *args, **kwargs):
+        return self.renderJsonResponse(request, self.form_class())
+
+
+class StockExport(AjaxView):
+    """ Export stock data from a particular location.
+    Returns a file containing stock information for that location.
+    """
+
+    model = StockItem
+
+    def get(self, request, *args, **kwargs):
+
+        export_format = request.GET.get('format', 'csv').lower()
+        
+        # Check if a particular location was specified
+        loc_id = request.GET.get('location', None)
+        location = None
+        
+        if loc_id:
+            try:
+                location = StockLocation.objects.get(pk=loc_id)
+            except (ValueError, StockLocation.DoesNotExist):
+                pass
+
+        # Check if a particular supplier was specified
+        sup_id = request.GET.get('supplier', None)
+        supplier = None
+
+        if sup_id:
+            try:
+                supplier = Company.objects.get(pk=sup_id)
+            except (ValueError, Company.DoesNotExist):
+                pass
+
+        # Check if a particular part was specified
+        part_id = request.GET.get('part', None)
+        part = None
+
+        if part_id:
+            try:
+                part = Part.objects.get(pk=part_id)
+            except (ValueError, Part.DoesNotExist):
+                pass
+
+        if export_format not in GetExportFormats():
+            export_format = 'csv'
+
+        filename = 'InvenTree_Stocktake_{date}.{fmt}'.format(
+            date=datetime.now().strftime("%d-%b-%Y"),
+            fmt=export_format
+        )
+
+        if location:
+            # CHeck if locations should be cascading
+            cascade = str2bool(request.GET.get('cascade', True))
+            stock_items = location.get_stock_items(cascade)
+        else:
+            cascade = True
+            stock_items = StockItem.objects.all()
+
+        if part:
+            stock_items = stock_items.filter(part=part)
+
+        if supplier:
+            stock_items = stock_items.filter(supplier_part__supplier=supplier)
+
+        # Filter out stock items that are not 'in stock'
+        stock_items = stock_items.filter(customer=None)
+        stock_items = stock_items.filter(belongs_to=None)
+
+        # Pre-fetch related fields to reduce DB queries
+        stock_items = stock_items.prefetch_related('part', 'supplier_part__supplier', 'location', 'purchase_order', 'build')
+
+        dataset = StockItemResource().export(queryset=stock_items)
+
+        filedata = dataset.export(export_format)
+
+        return DownloadFile(filedata, filename)
+
+
 class StockItemQRCode(QRCodeView):
     """ View for displaying a QR code for a StockItem object """
 
@@ -147,7 +265,15 @@ class StockAdjust(AjaxView, FormMixin):
     stock_items = []
 
     def get_GET_items(self):
-        """ Return list of stock items initally requested using GET """
+        """ Return list of stock items initally requested using GET.
+
+        Items can be retrieved by:
+
+        a) List of stock ID - stock[]=1,2,3,4,5
+        b) Parent part - part=3
+        c) Parent location - location=78
+        d) Single item - item=2
+        """
 
         # Start with all 'in stock' items
         items = StockItem.objects.filter(customer=None, belongs_to=None)
@@ -223,6 +349,7 @@ class StockAdjust(AjaxView, FormMixin):
 
         if not self.stock_action == 'move':
             form.fields.pop('destination')
+            form.fields.pop('set_loc')
 
         return form
 
@@ -256,7 +383,7 @@ class StockAdjust(AjaxView, FormMixin):
 
         self.request = request
 
-        self.stock_action = request.POST.get('stock_action').lower()
+        self.stock_action = request.POST.get('stock_action', 'invalid').lower()
 
         # Update list of stock items
         self.stock_items = self.get_POST_items()
@@ -296,8 +423,22 @@ class StockAdjust(AjaxView, FormMixin):
         }
 
         if valid:
+            result = self.do_action()
 
-            data['success'] = self.do_action()
+            data['success'] = result
+
+            # Special case - Single Stock Item
+            # If we deplete the stock item, we MUST redirect to a new view
+            single_item = len(self.stock_items) == 1
+
+            if result and single_item:
+
+                # Was the entire stock taken?
+                item = self.stock_items[0]
+                
+                if item.quantity == 0:
+                    # Instruct the form to redirect
+                    data['url'] = reverse('stock-index')
 
         return self.renderJsonResponse(request, form, data=data)
 
@@ -307,6 +448,8 @@ class StockAdjust(AjaxView, FormMixin):
         if self.stock_action == 'move':
             destination = None
 
+            set_default_loc = str2bool(self.request.POST.get('set_loc', False))
+
             try:
                 destination = StockLocation.objects.get(id=self.request.POST.get('destination'))
             except StockLocation.DoesNotExist:
@@ -314,7 +457,7 @@ class StockAdjust(AjaxView, FormMixin):
             except ValueError:
                 pass
 
-            return self.do_move(destination)
+            return self.do_move(destination, set_default_loc)
 
         elif self.stock_action == 'add':
             return self.do_add()
@@ -371,7 +514,7 @@ class StockAdjust(AjaxView, FormMixin):
 
         return _("Counted stock for {n} items".format(n=count))
 
-    def do_move(self, destination):
+    def do_move(self, destination, set_loc=None):
         """ Perform actual stock movement """
 
         count = 0
@@ -382,6 +525,11 @@ class StockAdjust(AjaxView, FormMixin):
             # Avoid moving zero quantity
             if item.new_quantity <= 0:
                 continue
+
+            # If we wish to set the destination location to the default one
+            if set_loc:
+                item.part.default_location = destination
+                item.part.save()
             
             # Do not move to the same location (unless the quantity is different)
             if destination == item.location and item.new_quantity == item.quantity:
@@ -461,12 +609,85 @@ class StockLocationCreate(AjaxCreateView):
         return initials
 
 
+class StockItemSerialize(AjaxUpdateView):
+    """ View for manually serializing a StockItem """
+
+    model = StockItem
+    ajax_template_name = 'stock/item_serialize.html'
+    ajax_form_title = 'Serialize Stock'
+    form_class = SerializeStockForm
+
+    def get_initial(self):
+
+        initials = super().get_initial().copy()
+
+        item = self.get_object()
+
+        initials['quantity'] = item.quantity
+        initials['destination'] = item.location.pk
+
+        return initials
+
+    def get(self, request, *args, **kwargs):
+        
+        return super().get(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+
+        form = self.get_form()
+
+        item = self.get_object()
+
+        quantity = request.POST.get('quantity', 0)
+        serials = request.POST.get('serial_numbers', '')
+        dest_id = request.POST.get('destination', None)
+        notes = request.POST.get('note', '')
+        user = request.user
+
+        valid = True
+
+        try:
+            destination = StockLocation.objects.get(pk=dest_id)
+        except (ValueError, StockLocation.DoesNotExist):
+            destination = None
+
+        try:
+            numbers = ExtractSerialNumbers(serials, quantity)
+        except ValidationError as e:
+            form.errors['serial_numbers'] = e.messages
+            valid = False
+            numbers = []
+        
+        if valid:
+            try:
+                item.serializeStock(quantity, numbers, user, notes=notes, location=destination)
+            except ValidationError as e:
+                messages = e.message_dict
+                
+                for k in messages.keys():
+                    if k in ['quantity', 'destination', 'serial_numbers']:
+                        form.errors[k] = messages[k]
+                    else:
+                        form.non_field_errors = messages[k]
+
+                valid = False
+
+        data = {
+            'form_valid': valid,
+        }
+
+        return self.renderJsonResponse(request, form, data=data)
+
+
 class StockItemCreate(AjaxCreateView):
     """
     View for creating a new StockItem
     Parameters can be pre-filled by passing query items:
     - part: The part of which the new StockItem is an instance
     - location: The location of the new StockItem
+
+    If the parent part is a "tracked" part, provide an option to create uniquely serialized items
+    rather than a bulk quantity of stock items
     """
 
     model = StockItem
@@ -574,6 +795,8 @@ class StockItemCreate(AjaxCreateView):
 
         form = self.get_form()
 
+        data = {}
+
         valid = form.is_valid()
 
         if valid:
@@ -593,57 +816,65 @@ class StockItemCreate(AjaxCreateView):
                 if part.trackable:
                     sn = request.POST.get('serial_numbers', '')
 
-                    try:
-                        serials = ExtractSerialNumbers(sn, quantity)
+                    sn = str(sn).strip()
 
-                        existing = []
+                    # If user has specified a range of serial numbers
+                    if len(sn) > 0:
+                        try:
+                            serials = ExtractSerialNumbers(sn, quantity)
 
-                        for serial in serials:
-                            if not StockItem.check_serial_number(part, serial):
-                                existing.append(serial)
+                            existing = []
 
-                        if len(existing) > 0:
-                            exists = ",".join([str(x) for x in existing])
-                            form.errors['serial_numbers'] = [_('The following serial numbers already exist: ({sn})'.format(sn=exists))]
+                            for serial in serials:
+                                if not StockItem.check_serial_number(part, serial):
+                                    existing.append(serial)
+
+                            if len(existing) > 0:
+                                exists = ",".join([str(x) for x in existing])
+                                form.errors['serial_numbers'] = [_('The following serial numbers already exist: ({sn})'.format(sn=exists))]
+                                valid = False
+
+                            # At this point we have a list of serial numbers which we know are valid,
+                            # and do not currently exist
+                            form.clean()
+
+                            data = form.cleaned_data
+
+                            for serial in serials:
+                                # Create a new stock item for each serial number
+                                item = StockItem(
+                                    part=part,
+                                    quantity=1,
+                                    serial=serial,
+                                    supplier_part=data.get('supplier_part'),
+                                    location=data.get('location'),
+                                    batch=data.get('batch'),
+                                    delete_on_deplete=False,
+                                    status=data.get('status'),
+                                    notes=data.get('notes'),
+                                    URL=data.get('URL'),
+                                )
+
+                                item.save(user=request.user)
+
+                        except ValidationError as e:
+                            form.errors['serial_numbers'] = e.messages
                             valid = False
-
-                        # At this point we have a list of serial numbers which we know are valid,
-                        # and do not currently exist
-                        form.clean()
-
-                        data = form.cleaned_data
-
-                        for serial in serials:
-                            # Create a new stock item for each serial number
-                            item = StockItem(
-                                part=part,
-                                quantity=1,
-                                serial=serial,
-                                supplier_part=data.get('supplier_part'),
-                                location=data.get('location'),
-                                batch=data.get('batch'),
-                                delete_on_deplete=False,
-                                status=data.get('status'),
-                                notes=data.get('notes'),
-                                URL=data.get('URL'),
-                            )
-
-                            item.save()
-
-                    except ValidationError as e:
-                        form.errors['serial_numbers'] = e.messages
-                        valid = False
 
                 else:
                     # For non-serialized items, simply save the form.
                     # We need to call _post_clean() here because it is prevented in the form implementation
                     form.clean()
                     form._post_clean()
-                    form.save()
+                    
+                    item = form.save(commit=False)
+                    item.save(user=request.user)
 
-        data = {
-            'form_valid': valid,
-        }
+                    data['pk'] = item.pk
+                    data['url'] = item.get_absolute_url()
+                    data['success'] = _("Created new stock item")
+
+        data['form_valid'] = valid
 
         return self.renderJsonResponse(request, form, data=data)
 

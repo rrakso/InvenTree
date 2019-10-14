@@ -10,10 +10,13 @@ InvenTree Source Documentation
    Getting Started<start>
    Configuration<config>
    Deployment<deploy>
+   Migrate Data<migrate>
+   Update InvenTree<update>
+   Translations<translate>
+   Backup and Restore<backup>
    Modal Forms<forms>
    Tables<tables>
    REST API<rest>
-   Backup and Restore<backup>
    InvenTree Modules <modules>
    Module Reference<reference>
 

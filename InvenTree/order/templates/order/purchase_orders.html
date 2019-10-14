@@ -27,13 +27,12 @@ InvenTree | Purchase Orders
 $("#po-create").click(function() {
     launchModalForm("{% url 'purchase-order-create' %}",
         {
-            reload: true,
+            follow: true,
         }
     );
 });
 
-$("#po-table").bootstrapTable({
-    search: true,
+$("#po-table").inventreeTable({
 });
 
 {% endblock %}

@@ -1,3 +1,22 @@
+:root {
+    --primary-color: #335d88;
+    --secondary-color: #b69c80;
+    --highlight-color: #f5efe8;
+    --basic-color: #333;
+}
+
+
+.qr-code {
+    max-width: 400px;
+    max-height: 400px;
+    align-content: center;
+}
+
+.qr-container {
+    width: 100%;
+    align-content: center;
+}
+
 .navbar-brand {
     float: left;
 }
@@ -77,8 +96,23 @@
     width: 100%;
 }
 
+.basecurrency {
+    color: #050;
+    font-style: italic;
+    font-weight: bold;
+}
+
 .bomselect {
     max-width: 250px;
+}
+
+.rowvalid {
+    color: #050;
+}
+
+.rowinvalid {
+    color: #A00; 
+    font-style: italic;
 }
 
 /* Part image icons with full-display on mouse hover */
@@ -176,6 +210,28 @@
 
 .nav-tabs {
     margin-bottom: 20px;
+}
+
+.settings-container {
+    width: 90%;
+    padding: 15px;
+}
+
+.settings-nav {
+    height: 100%;
+    width: 160px;
+    position: fixed;
+    z-index: 1;
+    //top: 0;
+    //left: 0;
+    overflow-x: hidden;
+    padding-top: 20px;
+    padding-right: 25px;
+}
+
+.settings-content {
+    margin-left: 175px;
+    padding: 0px 10px;
 }
 
 .breadcrump {

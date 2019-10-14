@@ -6,6 +6,7 @@ Django views for interacting with Part app
 from __future__ import unicode_literals
 
 from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.shortcuts import HttpResponseRedirect
 from django.utils.translation import gettext_lazy as _
@@ -14,18 +15,21 @@ from django.views.generic import DetailView, ListView, FormView
 from django.forms.models import model_to_dict
 from django.forms import HiddenInput, CheckboxInput
 
-import tablib
-
 from fuzzywuzzy import fuzz
+from decimal import Decimal
 
 from .models import PartCategory, Part, PartAttachment
+from .models import PartParameterTemplate, PartParameter
 from .models import BomItem
 from .models import match_part_names
 
+from common.models import Currency
 from company.models import SupplierPart
 
 from . import forms as part_forms
-from .bom import MakeBomTemplate, BomUploadManager
+from .bom import MakeBomTemplate, BomUploadManager, ExportBom, IsValidBOMFormat
+
+from .admin import PartResource
 
 from InvenTree.views import AjaxView, AjaxCreateView, AjaxUpdateView, AjaxDeleteView
 from InvenTree.views import QRCodeView
@@ -52,6 +56,8 @@ class PartIndex(ListView):
         children = PartCategory.objects.filter(parent=None)
 
         context['children'] = children
+        context['category_count'] = PartCategory.objects.count()
+        context['part_count'] = Part.objects.count()
 
         return context
 
@@ -81,7 +87,10 @@ class PartAttachmentCreate(AjaxCreateView):
         initials = super(AjaxCreateView, self).get_initial()
 
         # TODO - If the proper part was not sent, return an error message
-        initials['part'] = Part.objects.get(id=self.request.GET.get('part'))
+        try:
+            initials['part'] = Part.objects.get(id=self.request.GET.get('part', None))
+        except (ValueError, Part.DoesNotExist):
+            pass
 
         return initials
 
@@ -132,11 +141,12 @@ class PartAttachmentDelete(AjaxDeleteView):
         }
 
 
-class PartSetCategory(AjaxView):
+class PartSetCategory(AjaxUpdateView):
     """ View for settings the part category for multiple parts at once """
 
     ajax_template_name = 'part/set_category.html'
     ajax_form_title = 'Set Part Category'
+    form_class = part_forms.SetPartCategoryForm
 
     category = None
     parts = []
@@ -151,7 +161,7 @@ class PartSetCategory(AjaxView):
         else:
             self.parts = []
 
-        return self.renderJsonResponse(request, context=self.get_context_data())
+        return self.renderJsonResponse(request, form=self.get_form(), context=self.get_context_data())
 
     def post(self, request, *args, **kwargs):
         """ Respond to a POST request to this view """
@@ -187,10 +197,14 @@ class PartSetCategory(AjaxView):
         }
 
         if valid:
-            for part in self.parts:
-                part.set_category(self.category)
+            self.set_category()
 
-        return self.renderJsonResponse(request, data=data, context=self.get_context_data())
+        return self.renderJsonResponse(request, data=data, form=self.get_form(), context=self.get_context_data())
+
+    @transaction.atomic
+    def set_category(self):
+        for part in self.parts:
+            part.set_category(self.category)
 
     def get_context_data(self):
         """ Return context data for rendering in the form """
@@ -1156,101 +1170,63 @@ class BomUpload(FormView):
 class PartExport(AjaxView):
     """ Export a CSV file containing information on multiple parts """
 
-    def get(self, request, *args, **kwargs):
-        part = request.GET.get('parts', '')
-        parts = []
+    def get_parts(self, request):
+        """ Extract part list from the POST parameters.
+        Parts can be supplied as:
         
-        for pk in part.split(','):
+        - Part category
+        - List of part PK values
+        """
+
+        # Filter by part category
+        cat_id = request.GET.get('category', None)
+
+        print('cat_id:', cat_id)
+
+        part_list = None
+
+        if cat_id is not None:
             try:
-                parts.append(Part.objects.get(pk=int(pk)))
-            except (Part.DoesNotExist, ValueError):
-                continue
+                category = PartCategory.objects.get(pk=cat_id)
+                part_list = category.get_parts()
+            except (ValueError, PartCategory.DoesNotExist):
+                pass
 
-        headers = [
-            'ID',
-            'Name',
-            'Description',
-            'Category',
-            'Category ID',
-            'IPN',
-            'Revision',
-            'URL',
-            'Keywords',
-            'Notes',
-            'Assembly',
-            'Component',
-            'Template',
-            'Trackable',
-            'Salable',
-            'Active',
-            'Virtual',
-            'Stock Info',  # Spacer between part data and stock data
-            'In Stock',
-            'Allocated',
-            'Building',
-            'On Order',
-        ]
+        # Backup - All parts
+        if part_list is None:
+            part_list = Part.objects.all()
 
-        # Construct list of suppliers for each part
-        supplier_names = set()
+        # Also optionally filter by explicit list of part IDs
+        part_ids = request.GET.get('parts', '')
+        parts = []
 
-        for part in parts:
-            supplier_parts = part.supplier_parts.all()
-            part.suppliers = {}
+        for pk in part_ids.split(','):
+            try:
+                parts.append(int(pk))
+            except ValueError:
+                pass
 
-            for sp in supplier_parts:
-                name = sp.supplier.name
-                supplier_names.add(name)
-                part.suppliers[name] = sp
+        if len(parts) > 0:
+            part_list = part_list.filter(pk__in=parts)
 
-        if len(supplier_names) > 0:
-            headers.append('Suppliers')
-            for name in supplier_names:
-                headers.append(name)
+        # Prefetch related fields to reduce DB hits
+        part_list = part_list.prefetch_related(
+            'category',
+            'used_in',
+            'builds',
+            'supplier_parts__purchase_order_line_items',
+            'stock_items__allocations',
+        )
 
-        data = tablib.Dataset(headers=headers)
+        return part_list
 
-        for part in parts:
-            line = []
+    def get(self, request, *args, **kwargs):
 
-            line.append(part.pk)
-            line.append(part.name)
-            line.append(part.description)
-            line.append(str(part.category))
-            line.append(part.category.pk)
-            line.append(part.IPN)
-            line.append(part.revision)
-            line.append(part.URL)
-            line.append(part.keywords)
-            line.append(part.notes)
-            line.append(part.assembly)
-            line.append(part.component)
-            line.append(part.is_template)
-            line.append(part.trackable)
-            line.append(part.salable)
-            line.append(part.active)
-            line.append(part.virtual)
+        parts = self.get_parts(request)
 
-            # Stock information
-            line.append('')
-            line.append(part.total_stock)
-            line.append(part.allocation_count)
-            line.append(part.quantity_being_built)
-            line.append(part.on_order)
+        dataset = PartResource().export(queryset=parts)
 
-            if len(supplier_names) > 0:
-                line.append('')
-
-                for name in supplier_names:
-                    sp = part.suppliers.get(name, None)
-                    if sp:
-                        line.append(sp.SKU)
-                    else:
-                        line.append('')
-
-            data.append(line)
-
-        csv = data.export('csv')
+        csv = dataset.export('csv')
         return DownloadFile(csv, 'InvenTree_Parts.csv')
 
 
@@ -1281,12 +1257,10 @@ class BomDownload(AjaxView):
 
         export_format = request.GET.get('format', 'csv')
 
-        # Placeholder to test file export
-        filename = '"' + part.name + '_BOM.' + export_format + '"'
+        if not IsValidBOMFormat(export_format):
+            export_format = 'csv'
 
-        filedata = part.export_bom(format=export_format)
-
-        return DownloadFile(filedata, filename)
+        return ExportBom(part, fmt=export_format)
 
     def get_data(self):
         return {
@@ -1324,7 +1298,7 @@ class PartPricing(AjaxView):
         except Part.DoesNotExist:
             return None
 
-    def get_pricing(self, quantity=1):
+    def get_pricing(self, quantity=1, currency=None):
 
         try:
             quantity = int(quantity)
@@ -1334,11 +1308,25 @@ class PartPricing(AjaxView):
         if quantity < 1:
             quantity = 1
 
+        if currency is None:
+            # No currency selected? Try to select a default one
+            try:
+                currency = Currency.objects.get(base=1)
+            except Currency.DoesNotExist:
+                currency = None
+
+        # Currency scaler
+        scaler = Decimal(1.0)
+
+        if currency is not None:
+            scaler = Decimal(currency.value)
+
         part = self.get_part()
         
         ctx = {
             'part': part,
-            'quantity': quantity
+            'quantity': quantity,
+            'currency': currency,
         }
 
         if part is None:
@@ -1350,6 +1338,12 @@ class PartPricing(AjaxView):
 
             if buy_price is not None:
                 min_buy_price, max_buy_price = buy_price
+
+                min_buy_price /= scaler
+                max_buy_price /= scaler
+
+                min_buy_price = round(min_buy_price, 3)
+                max_buy_price = round(max_buy_price, 3)
 
                 if min_buy_price:
                     ctx['min_total_buy_price'] = min_buy_price
@@ -1367,6 +1361,12 @@ class PartPricing(AjaxView):
             if bom_price is not None:
                 min_bom_price, max_bom_price = bom_price
 
+                min_bom_price /= scaler
+                max_bom_price /= scaler
+
+                min_bom_price = round(min_bom_price, 3)
+                max_bom_price = round(max_bom_price, 3)
+
                 if min_bom_price:
                     ctx['min_total_bom_price'] = min_bom_price
                     ctx['min_unit_bom_price'] = min_bom_price / quantity
@@ -1383,18 +1383,123 @@ class PartPricing(AjaxView):
 
     def post(self, request, *args, **kwargs):
 
+        currency = None
+
         try:
             quantity = int(self.request.POST.get('quantity', 1))
         except ValueError:
             quantity = 1
+
+        try:
+            currency_id = int(self.request.POST.get('currency', None))
+
+            if currency_id:
+                currency = Currency.objects.get(pk=currency_id)
+        except (ValueError, Currency.DoesNotExist):
+            currency = None
 
         # Always mark the form as 'invalid' (the user may wish to keep getting pricing data)
         data = {
             'form_valid': False,
         }
 
-        return self.renderJsonResponse(request, self.form_class(), data=data, context=self.get_pricing(quantity))
+        return self.renderJsonResponse(request, self.form_class(), data=data, context=self.get_pricing(quantity, currency))
 
+
+class PartParameterTemplateCreate(AjaxCreateView):
+    """ View for creating a new PartParameterTemplate """
+
+    model = PartParameterTemplate
+    form_class = part_forms.EditPartParameterTemplateForm
+    ajax_form_title = 'Create Part Parameter Template'
+
+
+class PartParameterTemplateEdit(AjaxUpdateView):
+    """ View for editing a PartParameterTemplate """
+
+    model = PartParameterTemplate
+    form_class = part_forms.EditPartParameterTemplateForm
+    ajax_form_title = 'Edit Part Parameter Template'
+
+
+class PartParameterTemplateDelete(AjaxDeleteView):
+    """ View for deleting an existing PartParameterTemplate """
+
+    model = PartParameterTemplate
+    ajax_form_title = "Delete Part Parameter Template"
+
+
+class PartParameterCreate(AjaxCreateView):
+    """ View for creating a new PartParameter """
+
+    model = PartParameter
+    form_class = part_forms.EditPartParameterForm
+    ajax_form_title = 'Create Part Parameter'
+
+    def get_initial(self):
+
+        initials = {}
+
+        part_id = self.request.GET.get('part', None)
+
+        if part_id:
+            try:
+                initials['part'] = Part.objects.get(pk=part_id)
+            except (Part.DoesNotExist, ValueError):
+                pass
+
+        return initials
+
+    def get_form(self):
+        """ Return the form object.
+
+        - Hide the 'Part' field (specified in URL)
+        - Limit the 'Template' options (to avoid duplicates)
+        """
+
+        form = super().get_form()
+
+        part_id = self.request.GET.get('part', None)
+
+        if part_id:
+            try:
+                part = Part.objects.get(pk=part_id)
+
+                form.fields['part'].widget = HiddenInput()
+
+                query = form.fields['template'].queryset
+
+                query = query.exclude(id__in=[param.template.id for param in part.parameters.all()])
+
+                form.fields['template'].queryset = query
+
+            except (Part.DoesNotExist, ValueError):
+                pass
+
+        return form
+
+
+class PartParameterEdit(AjaxUpdateView):
+    """ View for editing a PartParameter """
+
+    model = PartParameter
+    form_class = part_forms.EditPartParameterForm
+    ajax_form_title = 'Edit Part Parameter'
+
+    def get_form(self):
+
+        form = super().get_form()
+
+        return form
+
+
+class PartParameterDelete(AjaxDeleteView):
+    """ View for deleting a PartParameter """
+
+    model = PartParameter
+    ajax_template_name = 'part/param_delete.html'
+    ajax_form_title = 'Delete Part Parameter'
+    
 
 class CategoryDetail(DetailView):
     """ Detail view for PartCategory """
@@ -1543,7 +1648,7 @@ class BomItemCreate(AjaxCreateView):
 
             form.fields['part'].widget = HiddenInput()
 
-        except Part.DoesNotExist:
+        except (ValueError, Part.DoesNotExist):
             pass
 
         return form
@@ -1576,6 +1681,46 @@ class BomItemEdit(AjaxUpdateView):
     form_class = part_forms.EditBomItemForm
     ajax_template_name = 'modal_form.html'
     ajax_form_title = 'Edit BOM item'
+
+    def get_form(self):
+        """ Override get_form() method to filter part selection options
+
+        - Do not allow part to be added to its own BOM
+        - Remove any part items that are already in the BOM
+        """
+
+        form = super().get_form()
+
+        part_id = form['part'].value()
+
+        try:
+            part = Part.objects.get(pk=part_id)
+
+            query = form.fields['sub_part'].queryset
+
+            # Reduce the available selection options
+            query = query.exclude(pk=part_id)
+
+            # Eliminate any options that are already in the BOM,
+            # *except* for the item which is already selected
+            try:
+                sub_part_id = int(form['sub_part'].value())
+            except ValueError:
+                sub_part_id = -1
+
+            existing = [item.pk for item in part.required_parts()]
+
+            if sub_part_id in existing:
+                existing.remove(sub_part_id)
+
+            query = query.exclude(id__in=existing)
+
+            form.fields['sub_part'].queryset = query
+
+        except (ValueError, Part.DoesNotExist):
+            pass
+
+        return form
 
 
 class BomItemDelete(AjaxDeleteView):

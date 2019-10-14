@@ -5,7 +5,7 @@
 database:
   # Example configuration - sqlite (default)
   ENGINE: django.db.backends.sqlite3
-  NAME: inventree_db.sqlite3 
+  NAME: '../inventree_default_db.sqlite3' 
   
   # For more complex database installations, further parameters are required
   # Refer to the django documentation for full list of options
@@ -13,10 +13,13 @@ database:
   # Example Configuration - MySQL
   #ENGINE: django.db.backends.mysql
   #NAME: inventree
-  #USER: inventree
-  #PASSWORD: password
+  #USER: inventree_username
+  #PASSWORD: inventree_password
   #HOST: ''
   #PORT: ''
+
+# Select default system language (default is 'en-us')
+language: en-us
 
 # Set debug to False to run in production mode
 debug: True
@@ -41,15 +44,25 @@ cors:
 # MEDIA_ROOT is the local filesystem location for storing uploaded files
 # By default, it is stored in a directory named 'media' local to the InvenTree directory
 # This should be changed for a production installation
-media_root: './media'
+media_root: '../inventree_media'
 
 # STATIC_ROOT is the local filesystem location for storing static files
 # By default it is stored in a directory named 'static' local to the InvenTree directory
-static_root: './static'
+static_root: '../inventree_static'
+
+# Optional URL schemes to allow in URL fields
+# By default, only the following schemes are allowed: ['http', 'https', 'ftp', 'ftps']
+# Uncomment the lines below to allow extra schemes
+#extra_url_schemes:
+#  - mailto
+#  - git
+#  - ssh
 
 # Logging options
+# If debug mode is enabled, set log_queries to True to show aggregate database queries in the debug console
 log_queries: False
 
 # Backup options
 # Set the backup_dir parameter to store backup files in a specific location
+# If unspecified, the local user's temp directory will be used
 #backup_dir: '/home/inventree/backup/'

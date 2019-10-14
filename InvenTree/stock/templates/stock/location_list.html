@@ -7,8 +7,10 @@ Sub-Locations<span class='badge'>{{ children|length }}</span>
 {% block collapse_content %}
 <ul class="list-group">
 {% for child in children %}
-<li class="list-group-item"><a href="{% url 'stock-location-detail' child.id %}">{{ child.name }}</a> - <i>{{ child.description }}</i></li>
-    <span class='badge'>{{ child.partcount }}</span>
+<li class="list-group-item"><a href="{% url 'stock-location-detail' child.id %}">{{ child.name }}</a> - <i>{{ child.description }}</i>
+    {% if child.item_count > 0 %}
+    <span class='badge'>{{ child.item_count }} Item{% if child.item_count > 1 %}s{% endif %}</span>
+    {% endif %}
 </li>
 {% endfor %}
 </ul>

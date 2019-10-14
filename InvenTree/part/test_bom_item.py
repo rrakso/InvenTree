@@ -19,7 +19,7 @@ class BomItemTest(TestCase):
 
     def test_str(self):
         b = BomItem.objects.get(id=1)
-        self.assertEqual(str(b), '10 x M2x4 LPHS to make Bob')
+        self.assertEqual(str(b), '10 x M2x4 LPHS to make BOB | Bob | A2')
 
     def test_has_bom(self):
         self.assertFalse(self.orphan.has_bom)
@@ -31,15 +31,6 @@ class BomItemTest(TestCase):
         parts = self.bob.required_parts()
 
         self.assertIn(self.orphan, parts)
-
-    def test_bom_export(self):
-        parts = self.bob.required_parts()
-
-        data = self.bob.export_bom(format='csv')
-
-        for p in parts:
-            self.assertIn(p.name, data)
-            self.assertIn(p.description, data)
 
     def test_used_in(self):
         self.assertEqual(self.bob.used_in_count, 0)

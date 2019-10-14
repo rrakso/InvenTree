@@ -8,6 +8,7 @@ from .models import Part, PartStar
 
 from .models import PartCategory
 from .models import BomItem
+from .models import PartParameter, PartParameterTemplate
 
 from InvenTree.serializers import InvenTreeModelSerializer
 
@@ -131,6 +132,7 @@ class BomItemSerializer(InvenTreeModelSerializer):
     part_detail = PartBriefSerializer(source='part', many=False, read_only=True)
     sub_part_detail = PartBriefSerializer(source='sub_part', many=False, read_only=True)
     price_range = serializers.CharField(read_only=True)
+    validated = serializers.BooleanField(read_only=True, source='is_line_valid')
 
     def __init__(self, *args, **kwargs):
         # part_detail and sub_part_detail serializers are only included if requested.
@@ -171,4 +173,30 @@ class BomItemSerializer(InvenTreeModelSerializer):
             'price_range',
             'overage',
             'note',
+            'validated',
+        ]
+
+
+class PartParameterSerializer(InvenTreeModelSerializer):
+    """ JSON serializers for the PartParameter model """
+
+    class Meta:
+        model = PartParameter
+        fields = [
+            'pk',
+            'part',
+            'template',
+            'data'
+        ]
+
+
+class PartParameterTemplateSerializer(InvenTreeModelSerializer):
+    """ JSON serializer for the PartParameterTemplate model """
+
+    class Meta:
+        model = PartParameterTemplate
+        fields = [
+            'pk',
+            'name',
+            'units',
         ]

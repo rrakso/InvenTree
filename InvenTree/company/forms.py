@@ -58,7 +58,7 @@ class EditSupplierPartForm(HelperForm):
             'base_cost',
             'multiple',
             'packaging',
-            'lead_time'
+            # 'lead_time'
         ]
 
 
@@ -70,5 +70,6 @@ class EditPriceBreakForm(HelperForm):
         fields = [
             'part',
             'quantity',
-            'cost'
+            'cost',
+            'currency',
         ]

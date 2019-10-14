@@ -7,8 +7,6 @@ from __future__ import unicode_literals
 
 import os
 
-import tablib
-
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
 from django.urls import reverse
@@ -25,6 +23,8 @@ from django.contrib.auth.models import User
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
 
+from mptt.models import TreeForeignKey
+
 from datetime import datetime
 from fuzzywuzzy import fuzz
 import hashlib
@@ -32,6 +32,7 @@ import hashlib
 from InvenTree import helpers
 from InvenTree import validators
 from InvenTree.models import InvenTreeTree
+from InvenTree.fields import InvenTreeURLField
 
 from InvenTree.status_codes import BuildStatus, StockStatus, OrderStatus
 
@@ -48,7 +49,7 @@ class PartCategory(InvenTreeTree):
         default_keywords: Default keywords for parts created in this category
     """
 
-    default_location = models.ForeignKey(
+    default_location = TreeForeignKey(
         'stock.StockLocation', related_name="default_categories",
         null=True, blank=True,
         on_delete=models.SET_NULL,
@@ -64,21 +65,31 @@ class PartCategory(InvenTreeTree):
         verbose_name = "Part Category"
         verbose_name_plural = "Part Categories"
 
+    def get_parts(self, cascade=True):
+        """ Return a queryset for all parts under this category.
+
+        args:
+            cascade - If True, also look under subcategories (default = True)
+        """
+
+        if cascade:
+            """ Select any parts which exist in this category or any child categories """
+            query = Part.objects.filter(category__in=self.getUniqueChildren(include_self=True))
+        else:
+            query = Part.objects.filter(category=self.pk)
+
+        return query
+
     @property
     def item_count(self):
         return self.partcount()
 
-    def partcount(self, cascade=True, active=True):
+    def partcount(self, cascade=True, active=False):
         """ Return the total part count under this category
         (including children of child categories)
         """
 
-        cats = [self.id]
-
-        if cascade:
-            cats += [cat for cat in self.getUniqueChildren()]
-
-        query = Part.objects.filter(category__in=cats)
+        query = self.get_parts(cascade=cascade)
 
         if active:
             query = query.filter(active=True)
@@ -88,7 +99,7 @@ class PartCategory(InvenTreeTree):
     @property
     def has_parts(self):
         """ True if there are any parts in this category """
-        return self.parts.count() > 0
+        return self.partcount() > 0
 
 
 @receiver(pre_delete, sender=PartCategory, dispatch_uid='partcategory_delete_log')
@@ -253,17 +264,9 @@ class Part(models.Model):
 
     def set_category(self, category):
 
-        if not type(category) == PartCategory:
-            raise ValidationError({
-                'category': _('Invalid object supplied to part.set_category')
-            })
-
-        try:
-            # Already in this category!
-            if category == self.category:
-                return
-        except PartCategory.DoesNotExist:
-            pass
+        # Ignore if the category is already the same
+        if self.category == category:
+            return
 
         self.category = category
         self.save()
@@ -340,23 +343,23 @@ class Part(models.Model):
 
     keywords = models.CharField(max_length=250, blank=True, help_text='Part keywords to improve visibility in search results')
 
-    category = models.ForeignKey(PartCategory, related_name='parts',
-                                 null=True, blank=True,
-                                 on_delete=models.DO_NOTHING,
-                                 help_text='Part category')
+    category = TreeForeignKey(PartCategory, related_name='parts',
+                              null=True, blank=True,
+                              on_delete=models.DO_NOTHING,
+                              help_text='Part category')
 
     IPN = models.CharField(max_length=100, blank=True, help_text='Internal Part Number')
 
     revision = models.CharField(max_length=100, blank=True, help_text='Part revision or version number')
 
-    URL = models.URLField(blank=True, help_text='Link to extenal URL')
+    URL = InvenTreeURLField(blank=True, help_text='Link to extenal URL')
 
     image = models.ImageField(upload_to=rename_part_image, max_length=255, null=True, blank=True)
 
-    default_location = models.ForeignKey('stock.StockLocation', on_delete=models.SET_NULL,
-                                         blank=True, null=True,
-                                         help_text='Where is this item normally stored?',
-                                         related_name='default_parts')
+    default_location = TreeForeignKey('stock.StockLocation', on_delete=models.SET_NULL,
+                                      blank=True, null=True,
+                                      help_text='Where is this item normally stored?',
+                                      related_name='default_parts')
 
     def get_default_location(self):
         """ Get the default location for a Part (may be None).
@@ -370,13 +373,11 @@ class Part(models.Model):
             return self.default_location
         elif self.category:
             # Traverse up the category tree until we find a default location
-            cat = self.category
+            cats = self.category.get_ancestors(ascending=True, include_self=True)
 
-            while cat:
+            for cat in cats:
                 if cat.default_location:
                     return cat.default_location
-                else:
-                    cat = cat.parent
 
         # Default case - no default category found
         return None
@@ -631,24 +632,15 @@ class Part(models.Model):
         """ Return a checksum hash for the BOM for this part.
         Used to determine if the BOM has changed (and needs to be signed off!)
 
-        For hash is calculated from the following fields of each BOM item:
+        The hash is calculated by hashing each line item in the BOM.
 
-        - Part.full_name (if the part name changes, the BOM checksum is invalidated)
-        - Quantity
-        - Reference field
-        - Note field
-        
         returns a string representation of a hash object which can be compared with a stored value
         """
 
         hash = hashlib.md5(str(self.id).encode())
 
         for item in self.bom_items.all().prefetch_related('sub_part'):
-            hash.update(str(item.sub_part.id).encode())
-            hash.update(str(item.sub_part.full_name).encode())
-            hash.update(str(item.quantity).encode())
-            hash.update(str(item.note).encode())
-            hash.update(str(item.reference).encode())
+            hash.update(str(item.get_item_hash()).encode())
 
         return str(hash.digest())
 
@@ -666,6 +658,10 @@ class Part(models.Model):
         - Calculates and stores the hash for the BOM
         - Saves the current date and the checking user
         """
+
+        # Validate each line item too
+        for item in self.bom_items.all():
+            item.validate_hash()
 
         self.bom_checksum = self.get_bom_hash()
         self.bom_checked_by = user
@@ -843,7 +839,8 @@ class Part(models.Model):
         # Copy the BOM data
         if kwargs.get('bom', False):
             for item in other.bom_items.all():
-                # Point the item to THIS part
+                # Point the item to THIS part.
+                # Set the pk to None so a new entry is created.
                 item.part = self
                 item.pk = None
                 item.save()
@@ -857,76 +854,6 @@ class Part(models.Model):
         self.virtual = other.virtual
 
         self.save()
-
-    def export_bom(self, **kwargs):
-        """ Export Bill of Materials to a spreadsheet file.
-        Includes a row for each item in the BOM.
-        Also includes extra information such as supplier data.
-        """
-
-        items = self.bom_items.all().order_by('id')
-
-        supplier_names = set()
-
-        headers = [
-            'Part',
-            'Description',
-            'Quantity',
-            'Overage',
-            'Reference',
-            'Note',
-            '',
-            'In Stock',
-        ]
-
-        # Contstruct list of suppliers for each part
-        for item in items:
-            part = item.sub_part
-            supplier_parts = part.supplier_parts.all()
-            item.suppliers = {}
-
-            for sp in supplier_parts:
-                name = sp.supplier.name
-                supplier_names.add(name)
-                item.suppliers[name] = sp
-
-        if len(supplier_names) > 0:
-            headers.append('')
-            for name in supplier_names:
-                headers.append(name)
-
-        data = tablib.Dataset(headers=headers)
-
-        for it in items:
-            line = []
-
-            # Information about each BOM item
-            line.append(it.sub_part.full_name)
-            line.append(it.sub_part.description)
-            line.append(it.quantity)
-            line.append(it.overage)
-            line.append(it.reference)
-            line.append(it.note)
-
-            # Extra information about the part
-            line.append('')
-            line.append(it.sub_part.available_stock)
-
-            if len(supplier_names) > 0:
-                line.append('')  # Blank column separates supplier info
-
-                for name in supplier_names:
-                    sp = it.suppliers.get(name, None)
-                    if sp:
-                        line.append(sp.SKU)
-                    else:
-                        line.append('')
-
-            data.append(line)
-
-        file_format = kwargs.get('format', 'csv').lower()
-
-        return data.export(file_format)
 
     @property
     def attachment_count(self):
@@ -970,6 +897,11 @@ class Part(models.Model):
         """ Return the total number of items on order for this part. """
 
         return sum([part.on_order() for part in self.supplier_parts.all().prefetch_related('purchase_order_line_items')])
+
+    def get_parameters(self):
+        """ Return all parameters for this part, ordered by name """
+
+        return self.parameters.order_by('template__name')
 
 
 def attach_file(instance, filename):
@@ -1028,6 +960,75 @@ class PartStar(models.Model):
         unique_together = ['part', 'user']
 
 
+class PartParameterTemplate(models.Model):
+    """
+    A PartParameterTemplate provides a template for key:value pairs for extra
+    parameters fields/values to be added to a Part.
+    This allows users to arbitrarily assign data fields to a Part
+    beyond the built-in attributes.
+
+    Attributes:
+        name: The name (key) of the Parameter [string]
+        units: The units of the Parameter [string]
+    """
+
+    def __str__(self):
+        s = str(self.name)
+        if self.units:
+            s += " ({units})".format(units=self.units)
+        return s
+
+    def validate_unique(self, exclude=None):
+        """ Ensure that PartParameterTemplates cannot be created with the same name.
+        This test should be case-insensitive (which the unique caveat does not cover).
+        """
+
+        super().validate_unique(exclude)
+
+        try:
+            others = PartParameterTemplate.objects.filter(name__iexact=self.name).exclude(pk=self.pk)
+
+            if others.exists():
+                msg = _("Parameter template name must be unique")
+                raise ValidationError({"name": msg})
+        except PartParameterTemplate.DoesNotExist:
+            pass
+
+    name = models.CharField(max_length=100, help_text='Parameter Name', unique=True)
+
+    units = models.CharField(max_length=25, help_text='Parameter Units', blank=True)
+
+
+class PartParameter(models.Model):
+    """
+    A PartParameter is a specific instance of a PartParameterTemplate. It assigns a particular parameter <key:value> pair to a part.
+
+    Attributes:
+        part: Reference to a single Part object
+        template: Reference to a single PartParameterTemplate object
+        data: The data (value) of the Parameter [string]
+    """
+
+    def __str__(self):
+        # String representation of a PartParameter (used in the admin interface)
+        return "{part} : {param} = {data}{units}".format(
+            part=str(self.part.full_name),
+            param=str(self.template.name),
+            data=str(self.data),
+            units=str(self.template.units)
+        )
+
+    class Meta:
+        # Prevent multiple instances of a parameter for a single part
+        unique_together = ('part', 'template')
+
+    part = models.ForeignKey(Part, on_delete=models.CASCADE, related_name='parameters', help_text='Parent Part')
+
+    template = models.ForeignKey(PartParameterTemplate, on_delete=models.CASCADE, related_name='instances', help_text='Parameter Template')
+
+    data = models.CharField(max_length=500, help_text='Parameter Value')
+
+
 class BomItem(models.Model):
     """ A BomItem links a part to its component items.
     A part can have a BOM (bill of materials) which defines
@@ -1040,6 +1041,7 @@ class BomItem(models.Model):
         reference: BOM reference field (e.g. part designators)
         overage: Estimated losses for a Build. Can be expressed as absolute value (e.g. '7') or a percentage (e.g. '2%')
         note: Note field for this BOM item
+        checksum: Validation checksum for the particular BOM line item
     """
 
     def get_absolute_url(self):
@@ -1073,6 +1075,56 @@ class BomItem(models.Model):
     # Note attached to this BOM line item
     note = models.CharField(max_length=500, blank=True, help_text='BOM item notes')
 
+    checksum = models.CharField(max_length=128, blank=True, help_text='BOM line checksum')
+
+    def get_item_hash(self):
+        """ Calculate the checksum hash of this BOM line item:
+
+        The hash is calculated from the following fields:
+
+        - Part.full_name (if the part name changes, the BOM checksum is invalidated)
+        - Quantity
+        - Reference field
+        - Note field
+
+        """
+
+        # Seed the hash with the ID of this BOM item
+        hash = hashlib.md5(str(self.id).encode())
+
+        # Update the hash based on line information
+        hash.update(str(self.sub_part.id).encode())
+        hash.update(str(self.sub_part.full_name).encode())
+        hash.update(str(self.quantity).encode())
+        hash.update(str(self.note).encode())
+        hash.update(str(self.reference).encode())
+
+        return str(hash.digest())
+
+    def validate_hash(self, valid=True):
+        """ Mark this item as 'valid' (store the checksum hash).
+        
+        Args:
+            valid: If true, validate the hash, otherwise invalidate it (default = True)
+        """
+
+        if valid:
+            self.checksum = str(self.get_item_hash())
+        else:
+            self.checksum = ''
+
+        self.save()
+
+    @property
+    def is_line_valid(self):
+        """ Check if this line item has been validated by the user """
+
+        # Ensure an empty checksum returns False
+        if len(self.checksum) == 0:
+            return False
+
+        return self.get_item_hash() == self.checksum
+
     def clean(self):
         """ Check validity of the BomItem model.
 
@@ -1088,6 +1140,8 @@ class BomItem(models.Model):
                 if self.part == self.sub_part:
                     raise ValidationError({'sub_part': _('Part cannot be added to its own Bill of Materials')})
         
+            # TODO - Make sure that there is no recusion
+
             # Test for simple recursion
             for item in self.sub_part.bom_items.all():
                 if self.part == item.sub_part:
